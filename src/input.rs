@@ -511,12 +511,16 @@ impl Editor {
         let cursor = text.len();
         Self { text, cursor }
     }
-    pub fn insert(&mut self, text: &str) {
+    /// Insert text, returning whether the contents changed.
+    pub fn insert(&mut self, text: &str) -> bool {
         let clean: String = text.chars().filter(|c| !c.is_control()).collect();
         self.text.insert_str(self.cursor, &clean);
         self.cursor += clean.len();
+        !clean.is_empty()
     }
-    pub fn edit(&mut self, action: Action) {
+    /// Apply an edit, returning whether the contents changed (not the cursor).
+    pub fn edit(&mut self, action: Action) -> bool {
+        let previous_len = self.text.len();
         let previous = self.text[..self.cursor]
             .char_indices()
             .last()
@@ -555,6 +559,8 @@ impl Editor {
             }
             _ => {}
         }
+        // Editing actions only remove text or move the cursor.
+        self.text.len() != previous_len
     }
 }
 

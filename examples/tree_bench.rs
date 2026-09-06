@@ -45,15 +45,17 @@ fn measure(files: usize, nested: bool, repeats: usize) {
 
     let start = Instant::now();
     for _ in 0..repeats {
-        black_box(state.action(Action::NextFile, 30));
+        black_box(state.action(Action::NextFile, 30, Instant::now()));
         black_box(state.tree(false));
         black_box(state.matching_paths().len());
     }
     let navigation = start.elapsed();
 
-    state.action(Action::Filter, 30);
+    state.action(Action::Filter, 30, Instant::now());
     let start = Instant::now();
-    black_box(state.paste("file-000"));
+    black_box(state.paste("file-000", start));
+    // Apply immediately so this measures filtering rather than the debounce wait.
+    black_box(state.action(Action::Accept, 30, start));
     black_box(state.tree(false));
     let filter = start.elapsed();
     println!(

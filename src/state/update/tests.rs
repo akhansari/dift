@@ -54,9 +54,9 @@ fn reading_state() -> (State, u64) {
             .collect(),
         branch: "main".into(),
     });
-    state.action(Action::Search, 10);
-    state.paste("two");
-    state.action(Action::Accept, 10);
+    state.action(Action::Search, 10, Instant::now());
+    state.paste("two", Instant::now());
+    state.action(Action::Accept, 10, Instant::now());
     let request = state.render_request(80, 1);
     state.apply_render(
         RenderResult {
@@ -66,8 +66,8 @@ fn reading_state() -> (State, u64) {
         },
         1,
     );
-    state.action(Action::Focus, 1);
-    state.action(Action::First, 1);
+    state.action(Action::Focus, 1, Instant::now());
+    state.action(Action::First, 1, Instant::now());
     let request = state.render_request(80, 1);
     (state, request.generation)
 }
@@ -147,7 +147,7 @@ fn a_new_selection_can_display_its_preview_immediately() {
     // Given
     let (mut state, generation) = reading_state();
     state.scroll_by(1, true, 1);
-    state.action(Action::NextFile, 1);
+    state.action(Action::NextFile, 1, Instant::now());
     let result = RenderResult {
         generation,
         document: document(&["new selection"], true),
@@ -166,9 +166,9 @@ fn a_new_selection_can_display_its_preview_immediately() {
 fn moving_the_prompt_cursor_redraws_without_rendering_the_diff() {
     // Given
     let (mut state, _) = reading_state();
-    state.action(Action::Search, 10);
+    state.action(Action::Search, 10, Instant::now());
     // When
-    let effects = state.action(Action::CursorLeft, 10);
+    let effects = state.action(Action::CursorLeft, 10, Instant::now());
     // Then
     assert_eq!(effects, Effects::draw(false));
     assert_eq!(state.search(), "two");
@@ -178,9 +178,9 @@ fn moving_the_prompt_cursor_redraws_without_rendering_the_diff() {
 fn pasting_a_query_requests_a_new_render() {
     // Given
     let mut state = State::new(false);
-    state.action(Action::Search, 10);
+    state.action(Action::Search, 10, Instant::now());
     // When
-    let effects = state.paste("needle\n");
+    let effects = state.paste("needle\n", Instant::now());
     // Then
     assert_eq!(effects, Effects::draw(true));
     assert_eq!(state.search(), "needle");
@@ -190,10 +190,10 @@ fn pasting_a_query_requests_a_new_render() {
 fn cancelling_a_changed_query_renders_the_restored_query() {
     // Given
     let (mut state, _) = reading_state();
-    state.action(Action::Search, 10);
-    state.paste(" more");
+    state.action(Action::Search, 10, Instant::now());
+    state.paste(" more", Instant::now());
     // When
-    let effects = state.action(Action::Cancel, 10);
+    let effects = state.action(Action::Cancel, 10, Instant::now());
     // Then
     assert_eq!(effects, Effects::draw(true));
     assert_eq!(state.search(), "two");
@@ -204,12 +204,13 @@ fn cancelling_a_changed_query_renders_the_restored_query() {
 fn the_normal_quit_key_is_text_while_editing() {
     // Given
     let mut state = State::new(false);
-    state.action(Action::Search, 10);
+    state.action(Action::Search, 10, Instant::now());
     // When
     let effects = state.handle_key(
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
         &Bindings::defaults(),
         10,
+        Instant::now(),
     );
     // Then
     assert_eq!(effects, Effects::draw(true));
@@ -221,7 +222,7 @@ fn manual_refresh_requests_collection_without_replacing_the_document() {
     // Given
     let (mut state, _) = reading_state();
     // When
-    let effects = state.action(Action::Refresh, 10);
+    let effects = state.action(Action::Refresh, 10, Instant::now());
     // Then
     assert!(effects.collect);
     assert!(!effects.render);

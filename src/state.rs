@@ -14,7 +14,10 @@ use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
+
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -32,6 +35,8 @@ pub struct Prompt {
     previous: String,
     /// Selected path from before the prompt opened.
     previous_selection: PathBuf,
+    /// When the latest filter edit should be applied.
+    filter_deadline: Option<Instant>,
 }
 
 impl Prompt {
@@ -54,7 +59,7 @@ pub struct State {
     selection: PathBuf,
     /// Directories whose children are hidden in the tree.
     collapsed: BTreeSet<PathBuf>,
-    /// Fuzzy query used to filter file paths.
+    /// Applied fuzzy query used to filter file paths; draft text lives in the prompt.
     filter: String,
     /// Query used to find matches in the diff.
     search: String,
@@ -255,9 +260,20 @@ impl State {
             editor: Editor::new(text.clone()),
             previous: text.clone(),
             previous_selection: self.selection.clone(),
+            filter_deadline: None,
         });
     }
-    fn sync_prompt(&mut self) -> bool {
+    fn prompt_edited(&mut self, now: Instant) -> bool {
+        if let Some(prompt) = &mut self.prompt
+            && prompt.kind == PromptKind::Filter
+        {
+            prompt.filter_deadline =
+                (prompt.editor.text() != self.filter).then_some(now + FILTER_DEBOUNCE);
+            return false;
+        }
+        self.apply_prompt()
+    }
+    fn apply_prompt(&mut self) -> bool {
         let mut changed = false;
         if let Some(prompt) = &self.prompt {
             let query = match prompt.kind {
@@ -279,7 +295,7 @@ impl State {
         changed
     }
     fn finish_prompt(&mut self, accept: bool) -> bool {
-        let mut changed = false;
+        let mut changed = accept && self.apply_prompt();
         if let Some(prompt) = self.prompt.take()
             && !accept
         {
@@ -328,16 +344,19 @@ impl State {
             .saturating_sub(height / 3)
             .min(self.document.rows.len().saturating_sub(height));
     }
-    fn input_action(&mut self, action: Action) -> bool {
-        if let Some(prompt) = &mut self.prompt {
-            prompt.editor.edit(action);
-        }
-        self.sync_prompt()
+    fn input_action(&mut self, action: Action, now: Instant) -> bool {
+        let changed = self
+            .prompt
+            .as_mut()
+            .is_some_and(|prompt| prompt.editor.edit(action));
+        changed && self.prompt_edited(now)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    mod debounce;
+
     use super::*;
     use crate::model::{Category, Change};
     fn snapshot() -> Snapshot {
@@ -397,7 +416,7 @@ mod tests {
     fn selecting_a_directory_includes_every_status() {
         // Given
         let mut state = state();
-        state.action(Action::Down, 10);
+        state.action(Action::Down, 10, Instant::now());
         // When
         let selected = state.selected_changes();
         // Then
@@ -407,10 +426,10 @@ mod tests {
     fn next_file_reveals_a_collapsed_path() {
         // Given
         let mut state = state();
-        state.action(Action::Down, 10);
-        state.action(Action::Left, 10);
+        state.action(Action::Down, 10, Instant::now());
+        state.action(Action::Left, 10, Instant::now());
         // When
-        state.action(Action::NextFile, 10);
+        state.action(Action::NextFile, 10, Instant::now());
         // Then
         assert_eq!(state.selection(), Path::new("src/a.rs"));
         assert!(!state.is_collapsed(Path::new("src")));
@@ -420,11 +439,11 @@ mod tests {
     fn cancel_filter_restores_query_and_selection() {
         // Given
         let mut state = state();
-        state.action(Action::NextFile, 10);
-        state.action(Action::Filter, 10);
-        state.paste("tests");
+        state.action(Action::NextFile, 10, Instant::now());
+        state.action(Action::Filter, 10, Instant::now());
+        state.paste("tests", Instant::now());
         // When
-        state.action(Action::Cancel, 10);
+        state.action(Action::Cancel, 10, Instant::now());
         // Then
         assert_eq!(state.filter(), "");
         assert_eq!(state.selection(), Path::new("src/a.rs"));
@@ -438,7 +457,7 @@ mod tests {
         initial.changes[0].path = "src/0-gone.rs".into();
         let mut state = State::new(false);
         state.update_snapshot(initial);
-        state.action(Action::NextFile, 10);
+        state.action(Action::NextFile, 10, Instant::now());
         // When
         state.update_snapshot(snapshot());
         // Then
@@ -449,17 +468,17 @@ mod tests {
     fn refreshing_keeps_selection_queries_and_collapsed_directories() {
         // Given
         let mut state = state();
-        state.action(Action::Last, 10);
-        state.action(Action::Left, 10);
-        state.action(Action::Left, 10);
-        state.action(Action::First, 10);
-        state.action(Action::NextFile, 10);
-        state.action(Action::Filter, 10);
-        state.paste("src");
-        state.action(Action::Accept, 10);
-        state.action(Action::Search, 10);
-        state.paste("needle");
-        state.action(Action::Accept, 10);
+        state.action(Action::Last, 10, Instant::now());
+        state.action(Action::Left, 10, Instant::now());
+        state.action(Action::Left, 10, Instant::now());
+        state.action(Action::First, 10, Instant::now());
+        state.action(Action::NextFile, 10, Instant::now());
+        state.action(Action::Filter, 10, Instant::now());
+        state.paste("src", Instant::now());
+        state.action(Action::Accept, 10, Instant::now());
+        state.action(Action::Search, 10, Instant::now());
+        state.paste("needle", Instant::now());
+        state.action(Action::Accept, 10, Instant::now());
         let mut changed = snapshot();
         changed.changes[0].summary = Some("updated content".into());
         // When
@@ -480,9 +499,11 @@ mod tests {
     fn filtering_updates_the_tree_count_and_selected_changes_together() {
         // Given
         let mut state = state();
-        state.action(Action::Filter, 10);
+        let now = Instant::now();
+        state.action(Action::Filter, 10, now);
+        state.paste("tests", now);
         // When
-        state.paste("tests");
+        state.apply_pending_filter(now + Duration::from_millis(150));
         // Then
         assert_eq!(
             paths(&state),
@@ -496,11 +517,11 @@ mod tests {
     fn clearing_an_accepted_filter_restores_all_paths_and_categories() {
         // Given
         let mut state = state();
-        state.action(Action::Filter, 10);
-        state.paste("tests");
-        state.action(Action::Accept, 10);
+        state.action(Action::Filter, 10, Instant::now());
+        state.paste("tests", Instant::now());
+        state.action(Action::Accept, 10, Instant::now());
         // When
-        state.action(Action::Cancel, 10);
+        state.action(Action::Cancel, 10, Instant::now());
         // Then
         assert_eq!(state.matching_paths().len(), 3);
         assert_eq!(state.tree(false).len(), 6);
@@ -511,9 +532,9 @@ mod tests {
     fn collapsing_a_directory_keeps_its_changes_selected() {
         // Given
         let mut state = state();
-        state.action(Action::Down, 10);
+        state.action(Action::Down, 10, Instant::now());
         // When
-        state.action(Action::Left, 10);
+        state.action(Action::Left, 10, Instant::now());
         // Then
         assert_eq!(
             paths(&state),
@@ -533,10 +554,10 @@ mod tests {
     fn expanding_a_directory_restores_its_visible_descendants() {
         // Given
         let mut state = state();
-        state.action(Action::Down, 10);
-        state.action(Action::Left, 10);
+        state.action(Action::Down, 10, Instant::now());
+        state.action(Action::Left, 10, Instant::now());
         // When
-        state.action(Action::Right, 10);
+        state.action(Action::Right, 10, Instant::now());
         // Then
         assert_eq!(state.tree(false).len(), 6);
         assert_eq!(state.selection(), Path::new("src"));
@@ -547,10 +568,10 @@ mod tests {
     fn replacing_a_filtered_snapshot_removes_old_paths_and_falls_back_to_the_parent() {
         // Given
         let mut state = state();
-        state.action(Action::NextFile, 10);
-        state.action(Action::Filter, 10);
-        state.paste("src");
-        state.action(Action::Accept, 10);
+        state.action(Action::NextFile, 10, Instant::now());
+        state.action(Action::Filter, 10, Instant::now());
+        state.paste("src", Instant::now());
+        state.action(Action::Accept, 10, Instant::now());
         let replacement = snapshot_with(&[
             ("docs/guide.md", Category::Untracked),
             ("src/new.rs", Category::Staged),
@@ -571,7 +592,7 @@ mod tests {
     fn a_category_change_updates_badges_and_change_indices() {
         // Given
         let mut state = state();
-        state.action(Action::NextFile, 10);
+        state.action(Action::NextFile, 10, Instant::now());
         let replacement = snapshot_with(&[
             ("src/b.rs", Category::Untracked),
             ("src/a.rs", Category::Staged),
@@ -617,7 +638,7 @@ mod tests {
             ("src.rs", Category::Staged),
         ]));
         // When
-        state.action(Action::Down, 10);
+        state.action(Action::Down, 10, Instant::now());
         // Then
         assert_eq!(state.selection(), Path::new("src"));
         assert_eq!(state.selected_changes(), [0]);
@@ -627,10 +648,12 @@ mod tests {
     fn a_filter_without_matches_keeps_the_root_available() {
         // Given
         let mut state = state();
-        state.action(Action::NextFile, 10);
-        state.action(Action::Filter, 10);
+        let now = Instant::now();
+        state.action(Action::NextFile, 10, now);
+        state.action(Action::Filter, 10, now);
+        state.paste("missing-file", now);
         // When
-        state.paste("missing-file");
+        state.apply_pending_filter(now + Duration::from_millis(150));
         // Then
         assert_eq!(paths(&state), [Path::new("")]);
         assert_eq!(state.selection(), Path::new(""));
@@ -642,8 +665,8 @@ mod tests {
     fn a_snapshot_replacement_preserves_collapsed_ancestors_of_new_files() {
         // Given
         let mut state = state();
-        state.action(Action::Down, 10);
-        state.action(Action::Left, 10);
+        state.action(Action::Down, 10, Instant::now());
+        state.action(Action::Left, 10, Instant::now());
         let replacement = snapshot_with(&[("src/new.rs", Category::Untracked)]);
         // When
         state.update_snapshot(replacement);

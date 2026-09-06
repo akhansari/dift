@@ -29,7 +29,7 @@ use ratatui::{
 use std::{
     io::{self, IsTerminal},
     sync::{atomic::Ordering, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -89,6 +89,9 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
             viewport = new_viewport;
             render_needed = true;
         }
+        let effects = state.apply_pending_filter(Instant::now());
+        needs_draw |= effects.redraw;
+        render_needed |= effects.render;
         if render_needed {
             needs_draw = true;
             render_worker.request(state.render_request(viewport.0, viewport.1))?;
@@ -112,7 +115,11 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
             })?;
             needs_draw = false;
         }
-        if !event::poll(Duration::from_millis(33))? {
+        let poll_interval = Duration::from_millis(33);
+        let timeout = state
+            .filter_delay(Instant::now())
+            .map_or(poll_interval, |delay| delay.min(poll_interval));
+        if !event::poll(timeout)? {
             continue;
         }
         let effects = match event::read()? {
@@ -121,9 +128,9 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                 render: true,
                 ..Effects::default()
             },
-            Event::Paste(text) => state.paste(&text),
+            Event::Paste(text) => state.paste(&text, Instant::now()),
             Event::Key(key) if key.kind != KeyEventKind::Release => {
-                state.handle_key(key, &config.bindings, viewport.1)
+                state.handle_key(key, &config.bindings, viewport.1, Instant::now())
             }
             _ => Effects::default(),
         };

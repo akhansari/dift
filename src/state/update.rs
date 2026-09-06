@@ -6,7 +6,11 @@ use crate::{
     render::worker::{RenderRequest, RenderResult},
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// Work the terminal loop must perform after an interactive transition.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +38,29 @@ pub(super) struct Displayed {
 }
 
 impl State {
+    /// Time until a pending filter edit should be applied.
+    pub fn filter_delay(&self, now: Instant) -> Option<Duration> {
+        self.prompt
+            .as_ref()
+            .and_then(|prompt| prompt.filter_deadline)
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
+    /// Apply the latest filter edit once its debounce delay has elapsed.
+    pub fn apply_pending_filter(&mut self, now: Instant) -> Effects {
+        let Some(prompt) = &mut self.prompt else {
+            return Effects::default();
+        };
+        if !prompt
+            .filter_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            return Effects::default();
+        }
+        prompt.filter_deadline = None;
+        Effects::draw(self.apply_prompt())
+    }
+
     pub fn collection_started(&mut self) {
         self.collecting = true;
     }
@@ -116,20 +143,26 @@ impl State {
         self.displayed.query.clone_from(&self.search);
         true
     }
-    pub fn handle_key(&mut self, key: KeyEvent, bindings: &Bindings, height: usize) -> Effects {
+    pub fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        bindings: &Bindings,
+        height: usize,
+        now: Instant,
+    ) -> Effects {
         let scope = if self.prompt.is_some() {
             Scope::Input
         } else {
             self.focus
         };
         match bindings.action(scope, key) {
-            Some(action) => self.action(action, height),
+            Some(action) => self.action(action, height, now),
             None if !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 match key.code {
-                    KeyCode::Char(ch) => self.paste(ch.encode_utf8(&mut [0; 4])),
+                    KeyCode::Char(ch) => self.paste(ch.encode_utf8(&mut [0; 4]), now),
                     _ => Effects::default(),
                 }
             }
@@ -137,15 +170,15 @@ impl State {
         }
     }
 
-    pub fn paste(&mut self, text: &str) -> Effects {
+    pub fn paste(&mut self, text: &str, now: Instant) -> Effects {
         let Some(prompt) = &mut self.prompt else {
             return Effects::default();
         };
-        prompt.editor.insert(text);
-        Effects::draw(self.sync_prompt())
+        let changed = prompt.editor.insert(text);
+        Effects::draw(changed && self.prompt_edited(now))
     }
 
-    pub fn action(&mut self, action: Action, height: usize) -> Effects {
+    pub fn action(&mut self, action: Action, height: usize, now: Instant) -> Effects {
         if action == Action::Quit {
             return Effects {
                 quit: true,
@@ -156,7 +189,7 @@ impl State {
             let changed = match action {
                 Action::Accept => self.finish_prompt(true),
                 Action::Cancel => self.finish_prompt(false),
-                action => self.input_action(action),
+                action => self.input_action(action, now),
             };
             return Effects::draw(changed);
         }
