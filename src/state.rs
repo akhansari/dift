@@ -1,34 +1,21 @@
+mod tree;
+use tree::TreeIndex;
+pub use tree::TreeRow;
 mod update;
 use update::Displayed;
 pub use update::Effects;
 
 use crate::{
     input::{Action, Editor, Scope},
-    model::{Category, Snapshot, display_path},
+    model::Snapshot,
     render::Document,
 };
-use nucleo_matcher::{
-    Matcher, Utf32Str,
-    pattern::{Atom, AtomKind, CaseMatching, Normalization},
-};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-/// A file or directory displayed in the sidebar tree.
-#[derive(Debug, Clone)]
-pub struct TreeRow {
-    /// Path relative to the repository root.
-    pub path: PathBuf,
-    /// Whether this row represents a directory.
-    pub directory: bool,
-    /// Nesting depth used for indentation.
-    pub depth: usize,
-    /// Compact change category markers shown beside the path.
-    pub badges: String,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     Filter,
@@ -58,6 +45,7 @@ impl Prompt {
 
 /// Repository data and interactive state for the terminal UI.
 pub struct State {
+    tree: TreeIndex,
     displayed: Displayed,
     help_scroll: usize,
     /// Most recently collected repository changes.
@@ -154,12 +142,16 @@ impl State {
         self.match_index
     }
     pub fn new(split: bool) -> Self {
+        let snapshot = Arc::new(Snapshot::default());
+        let collapsed = BTreeSet::new();
+        let tree = TreeIndex::new(&snapshot, "", &collapsed);
         Self {
+            tree,
             displayed: Displayed::default(),
             help_scroll: 0,
-            snapshot: Arc::new(Snapshot::default()),
+            snapshot,
             selection: PathBuf::new(),
-            collapsed: BTreeSet::new(),
+            collapsed,
             filter: String::new(),
             search: String::new(),
             prompt: None,
@@ -178,130 +170,26 @@ impl State {
         }
     }
     pub fn update_snapshot(&mut self, snapshot: Snapshot) {
+        self.tree = TreeIndex::new(&snapshot, &self.filter, &self.collapsed);
         self.snapshot = Arc::new(snapshot);
         self.reconcile_selection();
     }
     fn reconcile_selection(&mut self) {
-        let paths = self.matching_paths();
-        while !self.selection.as_os_str().is_empty()
-            && !paths
-                .iter()
-                .any(|p| p == &self.selection || p.starts_with(&self.selection))
-        {
+        while !self.tree.contains_selection(&self.selection) {
             self.selection.pop();
         }
     }
-    pub fn matching_paths(&self) -> BTreeSet<PathBuf> {
-        let atom = Atom::new(
-            &self.filter,
-            CaseMatching::Smart,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-            false,
-        );
-        let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths());
-        let mut buffer = Vec::new();
-        self.snapshot
-            .changes
-            .iter()
-            .map(|c| &c.path)
-            .filter(|path| {
-                self.filter.is_empty()
-                    || atom
-                        .score(
-                            Utf32Str::new(&display_path(path), &mut buffer),
-                            &mut matcher,
-                        )
-                        .is_some()
-            })
-            .cloned()
-            .collect()
+    pub fn matching_paths(&self) -> &BTreeSet<PathBuf> {
+        self.tree.matching_paths()
     }
     pub fn selected_changes(&self) -> Vec<usize> {
-        let paths = self.matching_paths();
-        self.snapshot
-            .changes
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                paths.contains(&c.path)
-                    && (self.selection.as_os_str().is_empty()
-                        || c.path == self.selection
-                        || c.path.starts_with(&self.selection))
-            })
-            .map(|(i, _)| i)
-            .collect()
+        self.tree.selected_changes(&self.selection)
     }
-    pub fn tree(&self, include_collapsed: bool) -> Vec<TreeRow> {
-        let paths = self.matching_paths();
-        let mut nodes: BTreeMap<PathBuf, bool> = BTreeMap::new();
-        for path in &paths {
-            nodes.insert(path.clone(), false);
-            let mut parent = path.parent();
-            while let Some(p) = parent.filter(|p| !p.as_os_str().is_empty()) {
-                nodes.insert(p.to_owned(), true);
-                parent = p.parent();
-            }
-        }
-        let mut rows = vec![TreeRow {
-            path: PathBuf::new(),
-            directory: true,
-            depth: 0,
-            badges: String::new(),
-        }];
-        self.tree_children(Path::new(""), &nodes, &mut rows, include_collapsed, 1);
-        rows
-    }
-    fn tree_children(
-        &self,
-        parent: &Path,
-        nodes: &BTreeMap<PathBuf, bool>,
-        rows: &mut Vec<TreeRow>,
-        include_collapsed: bool,
-        depth: usize,
-    ) {
-        if !include_collapsed && self.collapsed.contains(parent) {
-            return;
-        }
-        let mut children: Vec<_> = nodes
-            .iter()
-            .filter(|(p, _)| p.parent() == Some(parent))
-            .collect();
-        children.sort_by(|(a, a_dir), (b, b_dir)| {
-            b_dir
-                .cmp(a_dir)
-                .then_with(|| a.file_name().cmp(&b.file_name()))
-        });
-        for (path, directory) in children {
-            let categories: BTreeSet<_> = self
-                .snapshot
-                .changes
-                .iter()
-                .filter(|c| c.path == *path)
-                .map(|c| c.category)
-                .collect();
-            let badges = categories
-                .into_iter()
-                .map(|c| match c {
-                    Category::Unstaged => 'U',
-                    Category::Untracked => '?',
-                    Category::Staged => 'S',
-                    Category::Comparison => 'M',
-                })
-                .collect();
-            rows.push(TreeRow {
-                path: path.clone(),
-                directory: *directory,
-                depth,
-                badges,
-            });
-            if *directory {
-                self.tree_children(path, nodes, rows, include_collapsed, depth + 1);
-            }
-        }
+    pub fn tree(&self, include_collapsed: bool) -> &[TreeRow] {
+        self.tree.rows(include_collapsed)
     }
     fn next_file(&mut self, forward: bool) {
-        let all = self.tree(true);
+        let all = self.tree.rows(true);
         let current = all
             .iter()
             .position(|r| r.path == self.selection)
@@ -313,14 +201,18 @@ impl State {
         };
         if let Some(row) = candidate {
             self.selection.clone_from(&row.path);
+            let mut revealed = false;
             for ancestor in row.path.ancestors().skip(1) {
-                self.collapsed.remove(ancestor);
+                revealed |= self.collapsed.remove(ancestor);
             }
             self.scroll = 0;
+            if revealed {
+                self.tree.reveal(&self.collapsed);
+            }
         }
     }
     fn move_tree(&mut self, forward: bool) {
-        let rows = self.tree(false);
+        let rows = self.tree.rows(false);
         let index = rows
             .iter()
             .position(|r| r.path == self.selection)
@@ -342,12 +234,15 @@ impl State {
             .any(|r| r.path == self.selection && r.directory);
         if is_directory && !self.collapsed.contains(&self.selection) {
             self.collapsed.insert(self.selection.clone());
+            self.tree.reveal(&self.collapsed);
         } else if self.selection.pop() {
             self.scroll = 0;
         }
     }
     fn expand(&mut self) {
-        self.collapsed.remove(&self.selection);
+        if self.collapsed.remove(&self.selection) {
+            self.tree.reveal(&self.collapsed);
+        }
     }
     fn begin_prompt(&mut self, kind: PromptKind) {
         let text = if kind == PromptKind::Filter {
@@ -370,14 +265,14 @@ impl State {
                 PromptKind::Search => &mut self.search,
             };
             changed = query != prompt.editor.text();
-            prompt.editor.text().clone_into(query);
+            if changed {
+                prompt.editor.text().clone_into(query);
+                if prompt.kind == PromptKind::Filter {
+                    self.tree.refilter(&self.filter, &self.collapsed);
+                }
+            }
         }
-        if !self.selection.as_os_str().is_empty()
-            && !self
-                .matching_paths()
-                .iter()
-                .any(|p| p == &self.selection || p.starts_with(&self.selection))
-        {
+        if !self.tree.contains_selection(&self.selection) {
             self.selection.clear();
             changed = true;
         }
@@ -391,7 +286,10 @@ impl State {
             if prompt.kind == PromptKind::Filter {
                 changed =
                     self.filter != prompt.previous || self.selection != prompt.previous_selection;
-                self.filter = prompt.previous;
+                if self.filter != prompt.previous {
+                    self.filter = prompt.previous;
+                    self.tree.refilter(&self.filter, &self.collapsed);
+                }
                 self.selection = prompt.previous_selection;
             } else {
                 changed = self.search != prompt.previous;
@@ -441,28 +339,40 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Change;
+    use crate::model::{Category, Change};
     fn snapshot() -> Snapshot {
-        let file = |path: &str, category| Change {
-            path: path.into(),
-            old_path: None,
-            category,
-            status: 'M',
-            hunks: Vec::new(),
-            summary: None,
-            oversized: false,
-            old_source: None,
-            new_source: None,
-        };
+        snapshot_with(&[
+            ("src/a.rs", Category::Unstaged),
+            ("src/a.rs", Category::Staged),
+            ("src/b.rs", Category::Untracked),
+            ("tests/c.rs", Category::Staged),
+        ])
+    }
+    fn snapshot_with(files: &[(&str, Category)]) -> Snapshot {
         Snapshot {
             branch: "main".into(),
-            changes: vec![
-                file("src/a.rs", Category::Unstaged),
-                file("src/a.rs", Category::Staged),
-                file("src/b.rs", Category::Untracked),
-                file("tests/c.rs", Category::Staged),
-            ],
+            changes: files
+                .iter()
+                .map(|(path, category)| Change {
+                    path: (*path).into(),
+                    old_path: None,
+                    category: *category,
+                    status: 'M',
+                    hunks: Vec::new(),
+                    summary: None,
+                    oversized: false,
+                    old_source: None,
+                    new_source: None,
+                })
+                .collect(),
         }
+    }
+    fn paths(state: &State) -> Vec<&Path> {
+        state
+            .tree(false)
+            .iter()
+            .map(|row| row.path.as_path())
+            .collect()
     }
     fn state() -> State {
         let mut state = State::new(false);
@@ -504,6 +414,7 @@ mod tests {
         // Then
         assert_eq!(state.selection(), Path::new("src/a.rs"));
         assert!(!state.is_collapsed(Path::new("src")));
+        assert!(paths(&state).contains(&Path::new("src/a.rs")));
     }
     #[test]
     fn cancel_filter_restores_query_and_selection() {
@@ -517,6 +428,8 @@ mod tests {
         // Then
         assert_eq!(state.filter(), "");
         assert_eq!(state.selection(), Path::new("src/a.rs"));
+        assert_eq!(state.matching_paths().len(), 3);
+        assert_eq!(state.tree(false).len(), 6);
     }
     #[test]
     fn vanished_file_selects_its_surviving_parent() {
@@ -561,5 +474,182 @@ mod tests {
             state.snapshot().changes[0].summary.as_deref(),
             Some("updated content")
         );
+    }
+
+    #[test]
+    fn filtering_updates_the_tree_count_and_selected_changes_together() {
+        // Given
+        let mut state = state();
+        state.action(Action::Filter, 10);
+        // When
+        state.paste("tests");
+        // Then
+        assert_eq!(
+            paths(&state),
+            [Path::new(""), Path::new("tests"), Path::new("tests/c.rs")]
+        );
+        assert_eq!(state.matching_paths().len(), 1);
+        assert_eq!(state.selected_changes(), [3]);
+    }
+
+    #[test]
+    fn clearing_an_accepted_filter_restores_all_paths_and_categories() {
+        // Given
+        let mut state = state();
+        state.action(Action::Filter, 10);
+        state.paste("tests");
+        state.action(Action::Accept, 10);
+        // When
+        state.action(Action::Cancel, 10);
+        // Then
+        assert_eq!(state.matching_paths().len(), 3);
+        assert_eq!(state.tree(false).len(), 6);
+        assert_eq!(state.selected_changes(), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn collapsing_a_directory_keeps_its_changes_selected() {
+        // Given
+        let mut state = state();
+        state.action(Action::Down, 10);
+        // When
+        state.action(Action::Left, 10);
+        // Then
+        assert_eq!(
+            paths(&state),
+            [
+                Path::new(""),
+                Path::new("src"),
+                Path::new("tests"),
+                Path::new("tests/c.rs")
+            ]
+        );
+        assert_eq!(state.tree(true).len(), 6);
+        assert_eq!(state.selected_changes(), [0, 1, 2]);
+        assert_eq!(state.matching_paths().len(), 3);
+    }
+
+    #[test]
+    fn expanding_a_directory_restores_its_visible_descendants() {
+        // Given
+        let mut state = state();
+        state.action(Action::Down, 10);
+        state.action(Action::Left, 10);
+        // When
+        state.action(Action::Right, 10);
+        // Then
+        assert_eq!(state.tree(false).len(), 6);
+        assert_eq!(state.selection(), Path::new("src"));
+        assert!(paths(&state).contains(&Path::new("src/b.rs")));
+    }
+
+    #[test]
+    fn replacing_a_filtered_snapshot_removes_old_paths_and_falls_back_to_the_parent() {
+        // Given
+        let mut state = state();
+        state.action(Action::NextFile, 10);
+        state.action(Action::Filter, 10);
+        state.paste("src");
+        state.action(Action::Accept, 10);
+        let replacement = snapshot_with(&[
+            ("docs/guide.md", Category::Untracked),
+            ("src/new.rs", Category::Staged),
+        ]);
+        // When
+        state.update_snapshot(replacement);
+        // Then
+        assert_eq!(state.selection(), Path::new("src"));
+        assert_eq!(
+            paths(&state),
+            [Path::new(""), Path::new("src"), Path::new("src/new.rs")]
+        );
+        assert_eq!(state.matching_paths().len(), 1);
+        assert_eq!(state.selected_changes(), [1]);
+    }
+
+    #[test]
+    fn a_category_change_updates_badges_and_change_indices() {
+        // Given
+        let mut state = state();
+        state.action(Action::NextFile, 10);
+        let replacement = snapshot_with(&[
+            ("src/b.rs", Category::Untracked),
+            ("src/a.rs", Category::Staged),
+        ]);
+        // When
+        state.update_snapshot(replacement);
+        // Then
+        assert_eq!(state.selected_changes(), [1]);
+        assert_eq!(state.tree(false)[2].badges, "S");
+        assert_eq!(state.tree(false)[2].path, Path::new("src/a.rs"));
+    }
+
+    #[test]
+    fn tree_order_places_directories_before_files_without_reordering_diff_categories() {
+        // Given
+        let mut state = State::new(false);
+        let snapshot = snapshot_with(&[
+            ("a.rs", Category::Unstaged),
+            ("z/main.rs", Category::Staged),
+        ]);
+        // When
+        state.update_snapshot(snapshot);
+        // Then
+        assert_eq!(
+            paths(&state),
+            [
+                Path::new(""),
+                Path::new("z"),
+                Path::new("z/main.rs"),
+                Path::new("a.rs")
+            ]
+        );
+        assert_eq!(state.selected_changes(), [0, 1]);
+    }
+
+    #[test]
+    fn selecting_a_directory_excludes_similarly_named_siblings() {
+        // Given
+        let mut state = State::new(false);
+        state.update_snapshot(snapshot_with(&[
+            ("src/a.rs", Category::Unstaged),
+            ("src-extra/b.rs", Category::Unstaged),
+            ("src.rs", Category::Staged),
+        ]));
+        // When
+        state.action(Action::Down, 10);
+        // Then
+        assert_eq!(state.selection(), Path::new("src"));
+        assert_eq!(state.selected_changes(), [0]);
+    }
+
+    #[test]
+    fn a_filter_without_matches_keeps_the_root_available() {
+        // Given
+        let mut state = state();
+        state.action(Action::NextFile, 10);
+        state.action(Action::Filter, 10);
+        // When
+        state.paste("missing-file");
+        // Then
+        assert_eq!(paths(&state), [Path::new("")]);
+        assert_eq!(state.selection(), Path::new(""));
+        assert!(state.matching_paths().is_empty());
+        assert!(state.selected_changes().is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_replacement_preserves_collapsed_ancestors_of_new_files() {
+        // Given
+        let mut state = state();
+        state.action(Action::Down, 10);
+        state.action(Action::Left, 10);
+        let replacement = snapshot_with(&[("src/new.rs", Category::Untracked)]);
+        // When
+        state.update_snapshot(replacement);
+        // Then
+        assert_eq!(paths(&state), [Path::new(""), Path::new("src")]);
+        assert_eq!(state.tree(true).len(), 3);
+        assert_eq!(state.selected_changes(), [0]);
     }
 }

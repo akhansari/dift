@@ -221,7 +221,7 @@ impl State {
             }
             Action::Last => {
                 if self.focus == Scope::Tree {
-                    if let Some(row) = self.tree(false).last() {
+                    if let Some(row) = self.tree.rows(false).last() {
                         self.selection.clone_from(&row.path);
                     }
                 } else {
@@ -235,8 +235,9 @@ impl State {
             Action::Cancel => {
                 if !self.search.is_empty() {
                     self.search.clear();
-                } else {
+                } else if !self.filter.is_empty() {
                     self.filter.clear();
+                    self.tree.refilter(&self.filter, &self.collapsed);
                 }
                 effects.render = true;
             }
