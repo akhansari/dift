@@ -1,4 +1,5 @@
 use super::*;
+mod tree_view;
 
 #[test]
 fn a_disconnected_worker_reports_which_worker_stopped() {

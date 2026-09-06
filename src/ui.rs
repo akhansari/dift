@@ -1,6 +1,7 @@
 mod collect;
 #[cfg(test)]
 mod fixtures;
+mod tree;
 mod watch;
 
 use crate::{
@@ -22,8 +23,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState,
+        Block, Borders, Clear, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
     },
 };
 use std::{
@@ -158,7 +159,7 @@ fn worker_update<T>(result: Result<T, mpsc::TryRecvError>, worker: &str) -> io::
 fn panes(body: Rect, sidebar: bool) -> (Rect, Rect) {
     if sidebar && body.width >= 24 {
         let pieces = Layout::horizontal([
-            Constraint::Length((body.width / 3).min(38)),
+            Constraint::Length((body.width / 3).min(34)),
             Constraint::Min(1),
         ])
         .split(body);
@@ -212,58 +213,7 @@ fn draw(
     );
     let (tree_area, diff_area) = panes(layout[1], state.sidebar());
     if tree_area.width > 0 {
-        let rows = state.tree(false);
-        list_state.select(rows.iter().position(|r| r.path == state.selection()));
-        let items: Vec<_> = rows
-            .iter()
-            .map(|row| {
-                let prefix = if row.directory {
-                    if state.is_collapsed(&row.path) {
-                        "▸"
-                    } else {
-                        "▾"
-                    }
-                } else {
-                    " "
-                };
-                let name = if row.path.as_os_str().is_empty() {
-                    "/".into()
-                } else {
-                    display_path(std::path::Path::new(
-                        row.path.file_name().unwrap_or_default(),
-                    ))
-                };
-                let indent = "  ".repeat(row.depth.saturating_sub(1));
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{indent}{prefix} {name}"), palette.base()),
-                    Span::styled(
-                        format!("  {}", row.badges),
-                        palette.base().fg(palette.muted),
-                    ),
-                ]))
-            })
-            .collect();
-        let count = state.matching_paths().len();
-        let tree = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" Changes · {count} "))
-                    .border_style(Style::default().fg(if state.focus() == Scope::Tree {
-                        palette.accent
-                    } else {
-                        palette.muted
-                    })),
-            )
-            .highlight_style(
-                palette
-                    .base()
-                    .bg(palette.panel)
-                    .fg(palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▎");
-        frame.render_stateful_widget(tree, tree_area, list_state);
+        tree::draw(frame, state, config, tree_area, list_state);
     }
     let scope = if state.selection().as_os_str().is_empty() {
         "Repository".into()
@@ -315,6 +265,8 @@ fn draw(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
+                .track_symbol(Some("│"))
+                .thumb_symbol("┃")
                 .track_style(palette.base().fg(palette.muted))
                 .thumb_style(palette.base().fg(palette.accent)),
             diff_area.inner(Margin {

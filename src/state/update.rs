@@ -270,7 +270,7 @@ impl State {
                 }
             }
             Action::Left => self.collapse(),
-            Action::Right => self.expand(),
+            Action::Right => self.enter_directory(),
             Action::HalfDown | Action::HalfUp => {
                 self.scroll_by((height / 2).max(1), action == Action::HalfDown, height)
             }
@@ -302,7 +302,7 @@ impl State {
                     self.search.clear();
                 } else if !self.filter.is_empty() {
                     self.filter.clear();
-                    self.tree.refilter(&self.filter, &self.collapsed);
+                    self.refilter();
                 }
                 effects.render = true;
             }

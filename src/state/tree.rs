@@ -20,11 +20,20 @@ pub struct TreeRow {
     pub depth: usize,
     /// Compact change category markers shown beside the path.
     pub badges: String,
+    /// Escaped basename, or the label for the repository root.
+    pub name: String,
+    /// Distinct matching paths in this subtree, including this path if changed.
+    pub count: usize,
+    /// Grapheme positions within the displayed name matched by the fuzzy query.
+    pub match_indices: Vec<usize>,
 }
 
 struct Node {
     path: PathBuf,
     searchable: String,
+    name: String,
+    name_start: usize,
+    name_end: usize,
     parent: Option<usize>,
     children: Vec<usize>,
     changes: Vec<usize>,
@@ -32,9 +41,20 @@ struct Node {
 }
 impl Node {
     fn new(path: &Path, parent: Option<usize>) -> Self {
+        let searchable = display_path(path);
+        let name = if path.as_os_str().is_empty() {
+            "All changes".into()
+        } else {
+            display_path(Path::new(path.file_name().unwrap_or_default()))
+        };
+        let name_end = nucleo_matcher::chars::graphemes(&searchable).count();
+        let name_start = name_end.saturating_sub(nucleo_matcher::chars::graphemes(&name).count());
         Self {
             path: path.to_owned(),
-            searchable: display_path(path),
+            searchable,
+            name,
+            name_start,
+            name_end,
             parent,
             children: Vec::new(),
             changes: Vec::new(),
@@ -118,25 +138,48 @@ impl TreeIndex {
         );
         let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths());
         let mut buffer = Vec::new();
-        let mut included = vec![false; self.nodes.len()];
+        let mut counts = vec![0; self.nodes.len()];
+        let mut matches = vec![BTreeSet::new(); self.nodes.len()];
+        let mut indices = Vec::new();
         self.matching.clear();
         for (id, node) in self.nodes.iter().enumerate() {
-            if node.changes.is_empty()
-                || (!filter.is_empty()
-                    && atom
-                        .score(Utf32Str::new(&node.searchable, &mut buffer), &mut matcher)
-                        .is_none())
-            {
+            indices.clear();
+            if node.changes.is_empty() {
                 continue;
             }
-            self.matching.insert(node.path.clone());
-            let mut ancestor = Some(id);
-            while let Some(id) = ancestor {
-                if included[id] {
-                    break;
+            if !filter.is_empty() {
+                let haystack = if node.searchable.is_ascii() {
+                    Utf32Str::Ascii(node.searchable.as_bytes())
+                } else {
+                    // Keep grapheme offsets even when combining marks leave
+                    // only ASCII base characters after segmentation.
+                    buffer.clear();
+                    buffer.extend(nucleo_matcher::chars::graphemes(&node.searchable));
+                    Utf32Str::Unicode(&buffer)
+                };
+                if atom.indices(haystack, &mut matcher, &mut indices).is_none() {
+                    continue;
                 }
-                included[id] = true;
-                ancestor = self.nodes[id].parent;
+            }
+            self.matching.insert(node.path.clone());
+            counts[id] = 1;
+            let mut ancestor = (!indices.is_empty()).then_some(id);
+            while let Some(id) = ancestor {
+                let node = &self.nodes[id];
+                matches[id].extend(indices.iter().filter_map(|index| {
+                    let index = *index as usize;
+                    (node.name_start..node.name_end)
+                        .contains(&index)
+                        .then(|| index - node.name_start)
+                }));
+                ancestor = node.parent;
+            }
+        }
+        // Parents are inserted before children, so one reverse pass counts paths
+        // without counting the same file again for each change category.
+        for id in (1..self.nodes.len()).rev() {
+            if let Some(parent) = self.nodes[id].parent {
+                counts[parent] += counts[id];
             }
         }
         // A path can be a file in one category and an ancestor in another.
@@ -145,7 +188,7 @@ impl TreeIndex {
             .nodes
             .iter()
             .enumerate()
-            .map(|(id, node)| id == 0 || node.children.iter().any(|child| included[*child]))
+            .map(|(id, node)| id == 0 || node.children.iter().any(|child| counts[*child] > 0))
             .collect();
         self.all.clear();
         let mut pending = vec![(0, 0)];
@@ -156,12 +199,15 @@ impl TreeIndex {
                 directory: directories[id],
                 depth,
                 badges: node.badges.clone(),
+                name: node.name.clone(),
+                count: counts[id],
+                match_indices: matches[id].iter().copied().collect(),
             });
             let mut children: Vec<_> = node
                 .children
                 .iter()
                 .copied()
-                .filter(|child| included[*child])
+                .filter(|child| counts[*child] > 0)
                 .collect();
             children.sort_by(|a, b| {
                 directories[*b].cmp(&directories[*a]).then_with(|| {
@@ -198,10 +244,6 @@ impl TreeIndex {
 
     pub(super) fn matching_paths(&self) -> &BTreeSet<PathBuf> {
         &self.matching
-    }
-
-    pub(super) fn contains_selection(&self, selection: &Path) -> bool {
-        selection.as_os_str().is_empty() || self.subtree_paths(selection).next().is_some()
     }
 
     pub(super) fn selected_changes(&self, selection: &Path) -> Vec<usize> {

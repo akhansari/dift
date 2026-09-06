@@ -47,8 +47,81 @@ fn generated_config_restores_working_defaults() -> Result<(), ConfigError> {
     );
     assert_eq!(config.limits.lines, 20_000);
     assert_eq!(config.emphasis, Emphasis::Word);
+    assert_eq!(config.icons, Icons::None);
     assert_eq!(config.whitespace, Whitespace::Exact);
     Ok(())
+}
+
+#[test]
+fn omitted_icons_work_with_an_unpatched_font() -> Result<(), ConfigError> {
+    // Given
+    let source = "appearance { layout \"split\"; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(config.icons, Icons::None);
+    Ok(())
+}
+
+#[test]
+fn nerd_font_icons_can_be_enabled_explicitly() -> Result<(), ConfigError> {
+    // Given
+    let source = "appearance { icons \"nerd\"; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(config.icons, Icons::Nerd);
+    Ok(())
+}
+
+#[test]
+fn icons_can_be_disabled_explicitly() -> Result<(), ConfigError> {
+    // Given
+    let source = "appearance { icons \"none\"; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(config.icons, Icons::None);
+    Ok(())
+}
+
+#[test]
+fn unsupported_icon_modes_report_the_setting() {
+    // Given
+    let source = "appearance { icons \"auto\"; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(
+        matches!(result, Err(ConfigError::Validation(ValidationError::ExpectedValue { setting, .. })) if setting == "appearance.icons")
+    );
+}
+
+#[test]
+fn icon_modes_must_be_strings() {
+    // Given
+    let source = "appearance { icons 1; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(matches!(
+        result,
+        Err(ConfigError::Validation(
+            ValidationError::ExpectedValue { .. }
+        ))
+    ));
+}
+
+#[test]
+fn duplicate_icon_modes_are_rejected() {
+    // Given
+    let source = "appearance { icons \"nerd\"; icons \"none\"; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(
+        matches!(result, Err(ConfigError::Validation(ValidationError::Duplicate { setting })) if setting == "appearance.icons")
+    );
 }
 
 macro_rules! whitespace_config {

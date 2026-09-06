@@ -50,6 +50,14 @@ pub enum Emphasis {
     Off,
 }
 
+/// Optional file-tree glyphs; the terminal must provide the selected font.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Icons {
+    #[default]
+    None,
+    Nerd,
+}
+
 /// Application settings for input, appearance, and repository updates.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -63,6 +71,8 @@ pub struct Config {
     pub split: bool,
     /// Granularity of emphasis within changed lines in either layout.
     pub emphasis: Emphasis,
+    /// File-tree icons, enabled explicitly for terminals using Nerd Fonts.
+    pub icons: Icons,
     /// Initial whitespace comparison policy; session toggles do not persist.
     pub whitespace: Whitespace,
     /// Thresholds for automatically loading file contents.
@@ -78,6 +88,7 @@ impl Default for Config {
             theme: "base16-ocean.dark".into(),
             split: false,
             emphasis: Emphasis::default(),
+            icons: Icons::default(),
             whitespace: Whitespace::default(),
             limits: Limits::default(),
             reconcile: Duration::from_secs(30),
@@ -214,6 +225,19 @@ impl Config {
                         }
                     }
                     "appearance" => match child_name {
+                        "icons" => {
+                            config.icons = match string_value(child)? {
+                                "none" => Icons::None,
+                                "nerd" => Icons::Nerd,
+                                _ => {
+                                    return Err(ValidationError::ExpectedValue {
+                                        setting: "appearance.icons".into(),
+                                        expected: "none or nerd",
+                                    }
+                                    .into());
+                                }
+                            }
+                        }
                         "mode" => {
                             config.light = match string_value(child)? {
                                 "dark" => false,
@@ -328,7 +352,7 @@ impl Config {
     pub fn template() -> String {
         let config = Self::default();
         let mut text = String::from(
-            "// dift configuration. Omitted settings retain defaults.\n// Keys are single events: ctrl-q, shift-tab, alt-j, etc.\n// Bindings support do=\"set\" (default), do=\"add\", do=\"remove\".\nappearance {\n    mode \"dark\"\n    theme \"base16-ocean.dark\"\n    layout \"unified\"\n    emphasis \"word\" // word, grapheme, or off\n}\ndiff {\n    whitespace \"exact\" // exact, ignore-changes, or ignore-all\n}\nlimits {\n    max-file-bytes 2097152\n    max-diff-lines 20000\n}\nwatch {\n    reconcile-seconds 30\n}\nkeybindings {\n",
+            "// dift configuration. Omitted settings retain defaults.\n// Keys are single events: ctrl-q, shift-tab, alt-j, etc.\n// Bindings support do=\"set\" (default), do=\"add\", do=\"remove\".\nappearance {\n    mode \"dark\"\n    theme \"base16-ocean.dark\"\n    layout \"unified\"\n    emphasis \"word\" // word, grapheme, or off\n    icons \"none\" // none or nerd (requires a Nerd Font)\n}\ndiff {\n    whitespace \"exact\" // exact, ignore-changes, or ignore-all\n}\nlimits {\n    max-file-bytes 2097152\n    max-diff-lines 20000\n}\nwatch {\n    reconcile-seconds 30\n}\nkeybindings {\n",
         );
         for scope in Scope::ALL {
             text.push_str(&format!("    {} {{\n", scope.name()));

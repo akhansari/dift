@@ -23,6 +23,11 @@ import unittest
 BINARY = Path(__file__).resolve().parents[1] / "target/debug/dift"
 
 
+def has_tree_badge(text, name, badges):
+    """Match a tree row independently of the space reserved for its basename."""
+    return re.search(rf"{re.escape(name)} +{re.escape(badges)} [│┃█║]", text) is not None
+
+
 class Screen:
     """Small VT screen reader for the cursor/erase sequences emitted by Ratatui."""
 
@@ -88,7 +93,9 @@ class Screen:
                     self.y += 1
                 elif ch == "\b":
                     self.x = max(0, self.x - 1)
-                elif not unicodedata.category(ch).startswith("C"):
+                # Private-use characters (Co), including Nerd Font glyphs,
+                # occupy terminal cells just like other printable characters.
+                elif unicodedata.category(ch) not in ("Cc", "Cf", "Cs"):
                     width = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in "WF" else 1)
                     if 0 <= self.y < self.height and 0 <= self.x < self.width:
                         self.rows[self.y][self.x] = ch
@@ -327,7 +334,7 @@ class TerminalSmoke(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-m", "add module")
         self.restart_session()
-        self.assertIn("Changes · 0", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "0"))
 
     @staticmethod
     def write_burst(path):
@@ -362,10 +369,59 @@ class TerminalSmoke(unittest.TestCase):
 
     def test_filter_changes_both_tree_and_aggregate_diff(self):
         self.session.send("fnotes\r")
-        self.session.wait("Changes · 1")
+        self.session.wait_for(lambda text: has_tree_badge(text, "All changes", "1/2"),
+                              "filtered count beside All changes")
         self.session.wait("Watching")
         self.assertIn("untracked note", self.session.screen.text)
         self.assertNotIn("main.rs", self.session.screen.text)
+
+    def test_tree_guide_follows_the_selected_files_parent(self):
+        # Given
+        self.session.send("n")
+        self.session.wait("src/main.rs · Unified")
+        # When
+        self.session.send("n")
+        self.session.wait("notes.txt · Unified")
+        # Then
+        self.assertEqual(self.session.screen.rows[3][2], "│")
+        self.assertEqual(self.session.screen.rows[4][2], "│")
+        self.assertEqual(self.session.screen.rows[4][4], " ")
+        self.assertEqual(self.session.screen.rows[5][2], "│")
+
+    def test_filter_reveals_a_collapsed_folder_and_clearing_restores_it(self):
+        # Given
+        self.session.send("jhfmain\r")
+        self.session.wait_for(lambda text: has_tree_badge(text, "All changes", "1/2"),
+                              "filtered count beside All changes")
+        self.session.wait("Filter: main")
+        self.session.send("l")
+        self.session.wait("src/main.rs · Unified")
+        # When
+        self.session.send("\x1b")
+        # Then
+        self.session.wait_for(lambda text: "src · Unified" in text and "Filter: main" not in text,
+                              "restored folder selection")
+        self.assertRegex(self.session.screen.text, r"▸ src +1")
+        self.assertFalse(has_tree_badge(self.session.screen.text, "main.rs", "US"))
+
+    def test_nerd_font_config_emits_icons_and_aligned_badges(self):
+        # Given
+        self.session.stop()
+        config = self.root / ".git/terminal-config.kdl"
+        source = 'appearance { icons "nerd"; }\n'
+        config.write_text(source)
+        # When
+        self.session = Session(self.root, config)
+        self.addCleanup(self.session.close)
+        self.session.wait("Watching")
+        # Then
+        self.assertIn(" All changes", self.session.screen.text)
+        self.assertIn(" src", self.session.screen.text)
+        self.assertNotIn("▾", self.session.screen.text)
+        self.assertNotIn("▸", self.session.screen.text)
+        self.assertIn(" main.rs", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "main.rs", "US"))
+        self.assertEqual(config.read_text(), source)
 
     def test_search_is_literal_and_input_keeps_quit_character(self):
         self.session.send("/working\r")
@@ -389,7 +445,7 @@ class TerminalSmoke(unittest.TestCase):
             mapped.flush()
         # Then
         self.session.wait("MAPPED!", timeout=4)
-        self.assertIn("main.rs  US", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "main.rs", "US"), self.session.screen.text)
 
     def test_submodule_head_change_refreshes_a_clean_tree(self):
         # Given
@@ -398,8 +454,8 @@ class TerminalSmoke(unittest.TestCase):
         self.git("commit", "--allow-empty", "-m", "new module commit", cwd=self.root / "module")
         # Then
         self.session.wait("Submodule change", timeout=4)
-        self.assertIn("Changes · 1", self.session.screen.text)
-        self.assertIn("module  U", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "1"))
+        self.assertTrue(has_tree_badge(self.session.screen.text, "module", "U"), self.session.screen.text)
 
     def test_atomic_save_refreshes_the_selected_file(self):
         # Given
@@ -420,8 +476,8 @@ class TerminalSmoke(unittest.TestCase):
         path.write_text("NEW_FILE_CONTENT\n")
         # Then
         self.session.wait("NEW_FILE_CONTENT", timeout=4)
-        self.assertIn("Changes · 3", self.session.screen.text)
-        self.assertIn("new.txt  ?", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "3"))
+        self.assertTrue(has_tree_badge(self.session.screen.text, "new.txt", "?"), self.session.screen.text)
 
     def test_deleting_the_selected_file_returns_to_the_root(self):
         # Given
@@ -432,7 +488,7 @@ class TerminalSmoke(unittest.TestCase):
         # Then
         self.session.wait_for(lambda text: "Repository · Unified" in text and "notes.txt" not in text,
                               "root selection without the deleted file", timeout=4)
-        self.assertIn("Changes · 1", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "1"))
         self.assertIn("working", self.session.screen.text)
 
     def test_tracked_deletion_refreshes_the_diff_status(self):
@@ -442,7 +498,7 @@ class TerminalSmoke(unittest.TestCase):
         path.unlink()
         # Then
         self.session.wait(" D  src/main.rs", timeout=4)
-        self.assertIn("main.rs  US", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "main.rs", "US"), self.session.screen.text)
 
     def test_staging_updates_badges_and_removes_the_unstaged_section(self):
         # Given
@@ -451,7 +507,7 @@ class TerminalSmoke(unittest.TestCase):
         # When
         self.git("add", "src/main.rs")
         # Then
-        self.session.wait_for(lambda text: "main.rs  S" in text and " UNSTAGED " not in text and "working" in text,
+        self.session.wait_for(lambda text: has_tree_badge(text, "main.rs", "S") and " UNSTAGED " not in text and "working" in text,
                               "staged content without an unstaged section", timeout=4)
         self.assertIn(" STAGED ", self.session.screen.text)
 
@@ -462,9 +518,9 @@ class TerminalSmoke(unittest.TestCase):
         # When
         self.git("restore", "--staged", "src/main.rs")
         # Then
-        self.session.wait_for(lambda text: "main.rs  U" in text and " STAGED " not in text and "working" in text,
+        self.session.wait_for(lambda text: has_tree_badge(text, "main.rs", "U") and " STAGED " not in text and "working" in text,
                               "unstaged content without a staged section", timeout=4)
-        self.assertNotIn("main.rs  US", self.session.screen.text)
+        self.assertFalse(has_tree_badge(self.session.screen.text, "main.rs", "US"), self.session.screen.text)
 
     def test_commit_clears_both_panes(self):
         # Given
@@ -475,7 +531,7 @@ class TerminalSmoke(unittest.TestCase):
         self.git("commit", "-m", "all changes")
         # Then
         self.session.wait("No changes in this view", timeout=4)
-        self.assertIn("Changes · 0", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "0"))
 
     def test_staged_rename_replaces_the_tree_path(self):
         # Given
@@ -485,9 +541,9 @@ class TerminalSmoke(unittest.TestCase):
         # When
         self.git("mv", "src/main.rs", "src/renamed.rs")
         # Then
-        self.session.wait("renamed.rs  S", timeout=4)
+        self.session.wait_for(lambda text: has_tree_badge(text, "renamed.rs", "S"), "renamed tree row", timeout=4)
         self.session.wait("src/renamed.rs", timeout=4)
-        self.assertNotIn("main.rs  S", self.session.screen.text)
+        self.assertFalse(has_tree_badge(self.session.screen.text, "main.rs", "S"), self.session.screen.text)
 
     def test_branch_switch_refreshes_the_branch_label(self):
         # Given
@@ -504,9 +560,9 @@ class TerminalSmoke(unittest.TestCase):
         # When
         ignore.write_text("notes.txt\n")
         # Then
-        self.session.wait_for(lambda text: ".gitignore  ?" in text and "untracked note" not in text,
+        self.session.wait_for(lambda text: has_tree_badge(text, ".gitignore", "?") and "untracked note" not in text,
                               "updated ignore rules", timeout=4)
-        self.assertNotIn("notes.txt  ?", self.session.screen.text)
+        self.assertFalse(has_tree_badge(self.session.screen.text, "notes.txt", "?"), self.session.screen.text)
 
     def test_manual_refresh_detects_an_external_ignore_change(self):
         # Given
@@ -516,7 +572,7 @@ class TerminalSmoke(unittest.TestCase):
         self.session.send("r")
         # Then
         self.session.wait("EXTERNAL_CHANGE", timeout=4)
-        self.assertIn("external.txt  ?", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "external.txt", "?"), self.session.screen.text)
 
     def test_periodic_scan_recovers_an_undelivered_content_change(self):
         # Given
@@ -529,7 +585,7 @@ class TerminalSmoke(unittest.TestCase):
             mapped.flush()
             # Then
             self.session.wait("PERIODIC_EDIT!", timeout=4)
-            self.assertIn("notes.txt  ?", self.session.screen.text)
+            self.assertTrue(has_tree_badge(self.session.screen.text, "notes.txt", "?"), self.session.screen.text)
 
     def test_external_ignore_replacement_refreshes_without_periodic_scan(self):
         # Given
@@ -540,7 +596,7 @@ class TerminalSmoke(unittest.TestCase):
         replacement.replace(ignore)
         # Then
         self.session.wait("EXTERNAL_CHANGE", timeout=4)
-        self.assertIn("external.txt  ?", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "external.txt", "?"), self.session.screen.text)
 
     def test_nested_ignore_negation_updates_both_panes(self):
         # Given
@@ -553,7 +609,7 @@ class TerminalSmoke(unittest.TestCase):
         (nested / ".gitignore").write_text("!keep.log\n")
         # Then
         self.session.wait("NESTED_REVEALED", timeout=4)
-        self.assertIn("keep.log  ?", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "keep.log", "?"), self.session.screen.text)
 
     def test_linked_worktree_observes_its_external_index(self):
         # Given
@@ -566,7 +622,7 @@ class TerminalSmoke(unittest.TestCase):
         # When
         self.git("add", "src/main.rs", cwd=linked)
         # Then
-        self.session.wait_for(lambda text: "main.rs  S" in text and " UNSTAGED " not in text,
+        self.session.wait_for(lambda text: has_tree_badge(text, "main.rs", "S") and " UNSTAGED " not in text,
                               "linked worktree index update", timeout=4)
         self.assertIn("LINKED_CONTENT", self.session.screen.text)
 
@@ -591,7 +647,7 @@ class TerminalSmoke(unittest.TestCase):
         writer.start()
         # Then
         self.session.wait("BURST_FINAL", timeout=4)
-        self.assertIn("main.rs  US", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "main.rs", "US"), self.session.screen.text)
 
     def test_renaming_a_directory_updates_its_children_in_both_panes(self):
         # Given

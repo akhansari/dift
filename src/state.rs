@@ -44,6 +44,8 @@ pub struct Prompt {
     previous: String,
     /// Selected path from before the prompt opened.
     previous_selection: PathBuf,
+    previous_collapsed: BTreeSet<PathBuf>,
+    previous_unfiltered_collapsed: Option<BTreeSet<PathBuf>>,
     /// When the latest filter edit should be applied.
     filter_deadline: Option<Instant>,
 }
@@ -68,6 +70,8 @@ pub struct State {
     selection: PathBuf,
     /// Directories whose children are hidden in the tree.
     collapsed: BTreeSet<PathBuf>,
+    /// Normal tree collapse state saved while a nonempty filter is active.
+    unfiltered_collapsed: Option<BTreeSet<PathBuf>>,
     /// Applied fuzzy query used to filter file paths; draft text lives in the prompt.
     filter: String,
     /// Query used to find matches in the diff.
@@ -177,6 +181,7 @@ impl State {
             snapshot,
             selection: PathBuf::new(),
             collapsed,
+            unfiltered_collapsed: None,
             filter: String::new(),
             search: String::new(),
             prompt: None,
@@ -234,9 +239,41 @@ impl State {
         }
     }
     fn reconcile_selection(&mut self) {
-        while !self.tree.contains_selection(&self.selection) {
-            self.selection.pop();
+        let previous = self.selection.clone();
+        while !self
+            .tree
+            .rows(false)
+            .iter()
+            .any(|row| row.path == self.selection)
+        {
+            if !self.selection.pop() {
+                break;
+            }
         }
+        if self.selection != previous {
+            self.scroll = 0;
+        }
+    }
+
+    fn refilter(&mut self) {
+        if self.filter.is_empty() {
+            if let Some(collapsed) = self.unfiltered_collapsed.take() {
+                self.collapsed = collapsed;
+            }
+        } else if self.unfiltered_collapsed.is_none() {
+            self.unfiltered_collapsed = Some(self.collapsed.clone());
+        }
+        self.tree.refilter(&self.filter, &self.collapsed);
+        if !self.filter.is_empty() {
+            let mut revealed = false;
+            for row in self.tree.rows(true).iter().filter(|row| row.directory) {
+                revealed |= self.collapsed.remove(&row.path);
+            }
+            if revealed {
+                self.tree.reveal(&self.collapsed);
+            }
+        }
+        self.reconcile_selection();
     }
     pub fn matching_paths(&self) -> &BTreeSet<PathBuf> {
         self.tree.matching_paths()
@@ -303,6 +340,16 @@ impl State {
             self.tree.reveal(&self.collapsed);
         }
     }
+    fn enter_directory(&mut self) {
+        if self.is_collapsed(&self.selection) {
+            self.expand();
+        } else if let Some(child) = self.tree.rows(false).iter().find(|row| {
+            !row.path.as_os_str().is_empty() && row.path.parent() == Some(&self.selection)
+        }) {
+            self.selection.clone_from(&child.path);
+            self.scroll = 0;
+        }
+    }
     fn begin_prompt(&mut self, kind: PromptKind) {
         let text = if kind == PromptKind::Filter {
             &self.filter
@@ -314,6 +361,8 @@ impl State {
             editor: Editor::new(text.clone()),
             previous: text.clone(),
             previous_selection: self.selection.clone(),
+            previous_collapsed: self.collapsed.clone(),
+            previous_unfiltered_collapsed: self.unfiltered_collapsed.clone(),
             filter_deadline: None,
         });
     }
@@ -338,13 +387,9 @@ impl State {
             if changed {
                 prompt.editor.text().clone_into(query);
                 if prompt.kind == PromptKind::Filter {
-                    self.tree.refilter(&self.filter, &self.collapsed);
+                    self.refilter();
                 }
             }
-        }
-        if !self.tree.contains_selection(&self.selection) {
-            self.selection.clear();
-            changed = true;
         }
         changed
     }
@@ -356,10 +401,10 @@ impl State {
             if prompt.kind == PromptKind::Filter {
                 changed =
                     self.filter != prompt.previous || self.selection != prompt.previous_selection;
-                if self.filter != prompt.previous {
-                    self.filter = prompt.previous;
-                    self.tree.refilter(&self.filter, &self.collapsed);
-                }
+                self.filter = prompt.previous;
+                self.collapsed = prompt.previous_collapsed;
+                self.unfiltered_collapsed = prompt.previous_unfiltered_collapsed;
+                self.tree.refilter(&self.filter, &self.collapsed);
                 self.selection = prompt.previous_selection;
             } else {
                 changed = self.search != prompt.previous;
@@ -410,6 +455,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     mod debounce;
+    mod tree_ux;
 
     use super::*;
     use crate::model::{Category, Change};
