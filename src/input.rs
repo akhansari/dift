@@ -2,14 +2,59 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{collections::BTreeMap, fmt};
 
 /// An error parsing or validating keyboard shortcuts.
-#[derive(Debug)]
-pub struct BindingError(
-    /// Human-readable error details.
-    pub String,
-);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindingError {
+    InvalidKey {
+        input: String,
+    },
+    UnavailableAction {
+        scope: Scope,
+        action: Action,
+    },
+    Conflict {
+        scope: Scope,
+        key: Key,
+        first: Action,
+        second: Action,
+    },
+    MissingBinding {
+        scope: Scope,
+        action: Action,
+    },
+}
 impl fmt::Display for BindingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        match self {
+            Self::InvalidKey { input } => write!(
+                f,
+                "Invalid key {input:?}; use a single key with optional ctrl-/alt-/shift- modifiers"
+            ),
+            Self::UnavailableAction {
+                scope: Scope::Input,
+                action,
+            } => write!(f, "{} is unavailable while editing input", action.name()),
+            Self::UnavailableAction { action, .. } => {
+                write!(f, "{} belongs in the input scope", action.name())
+            }
+            Self::Conflict {
+                scope,
+                key,
+                first,
+                second,
+            } => write!(
+                f,
+                "Conflicting {} key {key}: {} and {}",
+                scope.name(),
+                first.name(),
+                second.name()
+            ),
+            Self::MissingBinding { scope, action } => write!(
+                f,
+                "{}.{} needs at least one key",
+                scope.name(),
+                action.name()
+            ),
+        }
     }
 }
 impl std::error::Error for BindingError {}
@@ -235,9 +280,7 @@ impl Key {
                 match (chars.next(), chars.next()) {
                     (Some(ch), None) => KeyCode::Char(ch),
                     _ => {
-                        return Err(BindingError(format!(
-                            "Invalid key {raw:?}; use a single key with optional ctrl-/alt-/shift- modifiers"
-                        )));
+                        return Err(BindingError::InvalidKey { input: raw.into() });
                     }
                 }
             }
@@ -404,25 +447,25 @@ impl Bindings {
                     && !matches!(action, Action::Quit | Action::Accept | Action::Cancel)
                     && !keys.is_empty()
                 {
-                    return Err(BindingError(format!(
-                        "{} is unavailable while editing input",
-                        action.name()
-                    )));
+                    return Err(BindingError::UnavailableAction {
+                        scope,
+                        action: *action,
+                    });
                 }
                 if scope != Scope::Input && action.input_only() {
-                    return Err(BindingError(format!(
-                        "{} belongs in the input scope",
-                        action.name()
-                    )));
+                    return Err(BindingError::UnavailableAction {
+                        scope,
+                        action: *action,
+                    });
                 }
                 for key in keys {
                     if let Some((_, other)) = seen.iter().find(|(k, a)| *k == key && a != action) {
-                        return Err(BindingError(format!(
-                            "Conflicting {} key {key}: {} and {}",
-                            scope.name(),
-                            other.name(),
-                            action.name()
-                        )));
+                        return Err(BindingError::Conflict {
+                            scope,
+                            key: key.clone(),
+                            first: *other,
+                            second: *action,
+                        });
                     }
                     seen.push((key, *action));
                 }
@@ -440,11 +483,7 @@ impl Bindings {
                 .and_then(|s| s.get(&action))
                 .is_none_or(Vec::is_empty)
             {
-                return Err(BindingError(format!(
-                    "{}.{} needs at least one key",
-                    scope.name(),
-                    action.name()
-                )));
+                return Err(BindingError::MissingBinding { scope, action });
             }
         }
         Ok(())

@@ -1,9 +1,12 @@
+mod error;
+pub use error::{ConfigError, ValidationError};
+
 use crate::{
     git::Limits,
     input::{Action, Bindings, Key, Scope},
 };
 use kdl::{KdlDocument, KdlNode};
-use std::{collections::BTreeSet, fmt, fs, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
 
 /// Application settings for input, appearance, and repository updates.
 #[derive(Debug, Clone)]
@@ -34,29 +37,6 @@ impl Default for Config {
     }
 }
 
-/// An error loading or validating configuration.
-#[derive(Debug)]
-pub struct ConfigError(
-    /// Human-readable error details.
-    pub String,
-);
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for ConfigError {}
-impl From<crate::input::BindingError> for ConfigError {
-    fn from(error: crate::input::BindingError) -> Self {
-        Self(error.to_string())
-    }
-}
-impl From<String> for ConfigError {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
 impl Config {
     pub fn load(explicit: Option<PathBuf>) -> Result<Self, ConfigError> {
         let required = explicit.is_some();
@@ -64,65 +44,77 @@ impl Config {
             return Ok(Self::default());
         };
         match fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&text)
-                .map_err(|e| ConfigError(format!("Invalid config {}: {e}", path.display()))),
+            Ok(text) => Self::parse(&text).map_err(|source| ConfigError::AtPath {
+                path,
+                source: Box::new(source),
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => Ok(Self::default()),
-            Err(e) => Err(ConfigError(format!(
-                "Cannot read config {}: {e}",
-                path.display()
-            ))),
+            Err(source) => Err(ConfigError::Read { path, source }),
         }
     }
 
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-        let doc: KdlDocument = text.parse().map_err(|e| ConfigError(format!("{e}")))?;
+        let doc: KdlDocument = text.parse()?;
         let mut config = Self::default();
         let mut seen = BTreeSet::new();
         let mut explicit_theme = false;
         for node in doc.nodes() {
             let name = node.name().value();
             if !seen.insert(name) {
-                return Err(ConfigError(format!("Duplicate {name} group")));
+                return Err(ValidationError::Duplicate {
+                    setting: format!("{name} group"),
+                }
+                .into());
             }
             if !node.entries().is_empty() {
-                return Err(ConfigError(format!(
-                    "{name} is a group; values belong inside it"
-                )));
+                return Err(ValidationError::ArgumentsNotAllowed {
+                    setting: format!("{name} group"),
+                }
+                .into());
             }
             let children = node
                 .children()
-                .ok_or_else(|| ConfigError(format!("{name} requires a child block")))?;
+                .ok_or_else(|| ValidationError::ChildBlockRequired {
+                    setting: name.into(),
+                })?;
             let mut child_names = BTreeSet::new();
             for child in children.nodes() {
                 let child_name = child.name().value();
                 if !child_names.insert(child_name) {
-                    return Err(ConfigError(format!("Duplicate {name}.{child_name}")));
+                    return Err(ValidationError::Duplicate {
+                        setting: format!("{name}.{child_name}"),
+                    }
+                    .into());
                 }
                 match name {
                     "keybindings" => {
-                        let scope = Scope::parse(child_name).ok_or_else(|| {
-                            ConfigError(format!("Unknown keybinding scope {child_name}"))
-                        })?;
+                        let scope =
+                            Scope::parse(child_name).ok_or_else(|| ValidationError::Unknown {
+                                setting: format!("keybinding scope {child_name}"),
+                            })?;
                         if !child.entries().is_empty() {
-                            return Err(ConfigError(
-                                "Keybinding scopes cannot have arguments".into(),
-                            ));
+                            return Err(ValidationError::ArgumentsNotAllowed {
+                                setting: "Keybinding scopes".into(),
+                            }
+                            .into());
                         }
                         let actions = child.children().ok_or_else(|| {
-                            ConfigError("A keybinding scope requires a child block".into())
+                            ValidationError::ChildBlockRequired {
+                                setting: "A keybinding scope".into(),
+                            }
                         })?;
                         for binding in actions.nodes() {
                             let action =
                                 Action::parse(binding.name().value()).ok_or_else(|| {
-                                    ConfigError(format!(
-                                        "Unknown action {}",
-                                        binding.name().value()
-                                    ))
+                                    ValidationError::Unknown {
+                                        setting: format!("action {}", binding.name().value()),
+                                    }
                                 })?;
                             if binding.children().is_some() {
-                                return Err(ConfigError(
-                                    "Bindings cannot have child blocks".into(),
-                                ));
+                                return Err(ValidationError::ChildBlockNotAllowed {
+                                    setting: "Bindings".into(),
+                                }
+                                .into());
                             }
                             let operation = binding
                                 .get("do")
@@ -134,14 +126,16 @@ impl Config {
                                     if property.value() != "do"
                                         || entry.value().as_string().is_none()
                                     {
-                                        return Err(ConfigError(
-                                            "Only a string do property is supported on bindings"
-                                                .into(),
-                                        ));
+                                        return Err(
+                                            ValidationError::UnsupportedBindingProperty.into()
+                                        );
                                     }
                                 } else {
                                     keys.push(Key::parse(entry.value().as_string().ok_or_else(
-                                        || ConfigError("Keys must be strings".into()),
+                                        || ValidationError::ExpectedValue {
+                                            setting: "Keys".into(),
+                                            expected: "strings",
+                                        },
                                     )?)?);
                                 }
                             }
@@ -163,9 +157,10 @@ impl Config {
                                 }
                                 "remove" => current.retain(|key| !keys.contains(key)),
                                 _ => {
-                                    return Err(ConfigError(format!(
-                                        "Unknown binding operation {operation}"
-                                    )));
+                                    return Err(ValidationError::UnknownBindingOperation {
+                                        operation: operation.into(),
+                                    }
+                                    .into());
                                 }
                             }
                         }
@@ -176,9 +171,11 @@ impl Config {
                                 "dark" => false,
                                 "light" => true,
                                 _ => {
-                                    return Err(ConfigError(
-                                        "appearance.mode must be dark or light".into(),
-                                    ));
+                                    return Err(ValidationError::ExpectedValue {
+                                        setting: "appearance.mode".into(),
+                                        expected: "dark or light",
+                                    }
+                                    .into());
                                 }
                             }
                         }
@@ -191,38 +188,55 @@ impl Config {
                                 "unified" => false,
                                 "split" => true,
                                 _ => {
-                                    return Err(ConfigError(
-                                        "appearance.layout must be unified or split".into(),
-                                    ));
+                                    return Err(ValidationError::ExpectedValue {
+                                        setting: "appearance.layout".into(),
+                                        expected: "unified or split",
+                                    }
+                                    .into());
                                 }
                             }
                         }
                         _ => {
-                            return Err(ConfigError(format!(
-                                "Unknown appearance setting {child_name}"
-                            )));
+                            return Err(ValidationError::Unknown {
+                                setting: format!("appearance setting {child_name}"),
+                            }
+                            .into());
                         }
                     },
-                    "limits" => match child_name {
-                        "max-file-bytes" => config.limits.bytes = number_value(child)?,
-                        "max-diff-lines" => {
-                            config.limits.lines = usize::try_from(number_value(child)?)
-                                .map_err(|_| ConfigError("max-diff-lines is too large".into()))?
+                    "limits" => {
+                        match child_name {
+                            "max-file-bytes" => config.limits.bytes = number_value(child)?,
+                            "max-diff-lines" => {
+                                config.limits.lines = usize::try_from(number_value(child)?)
+                                    .map_err(|source| ValidationError::ValueTooLarge {
+                                        setting: "max-diff-lines",
+                                        source,
+                                    })?
+                            }
+                            _ => {
+                                return Err(ValidationError::Unknown {
+                                    setting: format!("limits setting {child_name}"),
+                                }
+                                .into());
+                            }
                         }
-                        _ => {
-                            return Err(ConfigError(format!(
-                                "Unknown limits setting {child_name}"
-                            )));
-                        }
-                    },
+                    }
                     "watch" if child_name == "reconcile-seconds" => {
                         config.reconcile = Duration::from_secs(number_value(child)?)
                     }
-                    _ => return Err(ConfigError(format!("Unknown setting {name}.{child_name}"))),
+                    _ => {
+                        return Err(ValidationError::Unknown {
+                            setting: format!("setting {name}.{child_name}"),
+                        }
+                        .into());
+                    }
                 }
             }
             if !matches!(name, "keybindings" | "appearance" | "limits" | "watch") {
-                return Err(ConfigError(format!("Unknown configuration group {name}")));
+                return Err(ValidationError::Unknown {
+                    setting: format!("configuration group {name}"),
+                }
+                .into());
             }
         }
         if config.light && !explicit_theme {
@@ -258,17 +272,22 @@ impl Config {
 fn value(node: &KdlNode) -> Result<&kdl::KdlValue, ConfigError> {
     if node.children().is_some() || node.entries().len() != 1 || node.entries()[0].name().is_some()
     {
-        return Err(ConfigError(format!(
-            "{} expects exactly one value",
-            node.name().value()
-        )));
+        return Err(ValidationError::ExpectedValue {
+            setting: node.name().value().into(),
+            expected: "exactly one value",
+        }
+        .into());
     }
     Ok(node.entries()[0].value())
 }
 fn string_value(node: &KdlNode) -> Result<&str, ConfigError> {
-    value(node)?
-        .as_string()
-        .ok_or_else(|| ConfigError(format!("{} expects a string", node.name().value())))
+    value(node)?.as_string().ok_or_else(|| {
+        ValidationError::ExpectedValue {
+            setting: node.name().value().into(),
+            expected: "a string",
+        }
+        .into()
+    })
 }
 fn number_value(node: &KdlNode) -> Result<u64, ConfigError> {
     value(node)?
@@ -276,10 +295,11 @@ fn number_value(node: &KdlNode) -> Result<u64, ConfigError> {
         .and_then(|n| u64::try_from(n).ok())
         .filter(|n| *n > 0)
         .ok_or_else(|| {
-            ConfigError(format!(
-                "{} expects a positive integer",
-                node.name().value()
-            ))
+            ValidationError::ExpectedValue {
+                setting: node.name().value().into(),
+                expected: "a positive integer",
+            }
+            .into()
         })
 }
 pub fn default_path() -> Option<PathBuf> {
@@ -301,88 +321,4 @@ pub fn default_path() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    #[test]
-    fn generated_config_restores_working_defaults() -> Result<(), ConfigError> {
-        // Given
-        let template = Config::template();
-        // When
-        let config = Config::parse(&template)?;
-        // Then
-        assert_eq!(
-            config.bindings.action(
-                Scope::Tree,
-                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)
-            ),
-            Some(Action::NextFile)
-        );
-        assert_eq!(config.limits.lines, 20_000);
-        Ok(())
-    }
-    #[test]
-    fn bindings_add_and_remove_without_replacing_other_defaults() -> Result<(), ConfigError> {
-        // Given
-        let source =
-            "keybindings { global { quit do=\"add\" \"ctrl-q\"; quit do=\"remove\" \"q\"; }; }";
-        // When
-        let config = Config::parse(source)?;
-        // Then
-        assert_eq!(
-            config.bindings.action(
-                Scope::Tree,
-                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
-            ),
-            Some(Action::Quit)
-        );
-        assert_eq!(
-            config.bindings.action(
-                Scope::Tree,
-                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
-            ),
-            None
-        );
-        Ok(())
-    }
-    #[test]
-    fn conflicting_effective_bindings_are_rejected() {
-        // Given
-        let source = "keybindings { tree { expand \"n\"; }; }";
-        // When
-        let result = Config::parse(source);
-        // Then
-        assert!(matches!(result, Err(ConfigError(message)) if message.contains("Conflicting")));
-    }
-    #[test]
-    fn input_scope_rejects_actions_that_cannot_run_in_an_editor() {
-        // Given
-        let source = "keybindings { input { next-file \"alt-n\"; }; }";
-        // When
-        let result = Config::parse(source);
-        // Then
-        assert!(
-            matches!(result, Err(ConfigError(message)) if message.contains("unavailable while editing input"))
-        );
-    }
-    #[test]
-    fn light_palette_uses_a_light_syntax_theme_despite_comments() -> Result<(), ConfigError> {
-        // Given
-        let source = "// theme is intentionally omitted\nappearance { mode \"light\"; }";
-        // When
-        let config = Config::parse(source)?;
-        // Then
-        assert_eq!(config.theme, "InspiredGitHub");
-        Ok(())
-    }
-    #[test]
-    fn explicit_theme_with_tab_separator_is_preserved() -> Result<(), ConfigError> {
-        // Given
-        let source = "appearance { mode \"light\"; theme\t\"Solarized (light)\"; }";
-        // When
-        let config = Config::parse(source)?;
-        // Then
-        assert_eq!(config.theme, "Solarized (light)");
-        Ok(())
-    }
-}
+mod tests;
