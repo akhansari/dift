@@ -2,6 +2,7 @@ mod cache;
 mod control;
 mod layout;
 mod prepare;
+mod refine;
 mod syntax;
 pub mod worker;
 
@@ -207,7 +208,7 @@ pub struct RenderStats {
     pub prepared_hits: u64,
     /// Number of rendered layout cache hits.
     pub layout_hits: u64,
-    /// Number of budgeted alignment and inline diff comparisons.
+    /// Number of budgeted block alignment and inline refinement operations.
     pub detail_comparisons: u64,
     /// Estimated bytes currently retained by renderer caches.
     pub cache_bytes: usize,
@@ -497,7 +498,14 @@ impl Renderer {
             .find(|entry| entry.hash == hash && entry.change.as_ref() == change)
             .map(|entry| Arc::clone(&entry.change))
             .unwrap_or_else(|| Arc::new(change.clone()));
-        let prepared = Arc::new(prepare::prepare(hash, shared, refined, budget, cancel)?);
+        let prepared = Arc::new(prepare::prepare(
+            hash,
+            shared,
+            refined,
+            self.config.emphasis,
+            budget,
+            cancel,
+        )?);
         self.prepared
             .insert(Arc::clone(&prepared), prepared.bytes());
         Ok(prepared)

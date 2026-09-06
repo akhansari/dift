@@ -1,6 +1,8 @@
 use super::*;
 use crate::model::Hunk;
 
+mod refinement;
+
 fn snapshot() -> Snapshot {
     Snapshot {
         branch: "main".into(),
@@ -691,6 +693,7 @@ fn a_zero_refinement_budget_still_preserves_both_sides_of_the_diff() -> crate::A
         0,
         Arc::new(snapshot.changes[0].clone()),
         true,
+        config.emphasis,
         &mut budget,
         &cancel,
     )?;

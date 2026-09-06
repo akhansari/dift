@@ -101,11 +101,12 @@ fn measure(
     let complete = start.elapsed();
     let stats = renderer.stats();
     println!(
-        "{label}: first={:.2}ms complete={:.2}ms parsed={} reused={} rows={total_rows} cache={:.2}MiB",
+        "{label}: first={:.2}ms complete={:.2}ms parsed={} reused={} comparisons={} rows={total_rows} cache={:.2}MiB",
         first.unwrap_or_default().as_secs_f64() * 1000.0,
         complete.as_secs_f64() * 1000.0,
         stats.syntax_lines - before.syntax_lines,
         stats.reused_syntax_lines - before.reused_syntax_lines,
+        stats.detail_comparisons - before.detail_comparisons,
         stats.cache_bytes as f64 / (1024.0 * 1024.0),
     );
     Ok(())

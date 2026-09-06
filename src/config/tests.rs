@@ -46,7 +46,98 @@ fn generated_config_restores_working_defaults() -> Result<(), ConfigError> {
         Some(Action::NextFile)
     );
     assert_eq!(config.limits.lines, 20_000);
+    assert_eq!(config.emphasis, Emphasis::Word);
     Ok(())
+}
+
+#[test]
+fn omitted_emphasis_preserves_whole_word_highlighting() -> Result<(), ConfigError> {
+    // Given
+    let source = "appearance { layout \"split\"; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(config.emphasis, Emphasis::Word);
+    Ok(())
+}
+
+#[test]
+fn word_emphasis_can_be_selected_explicitly() -> Result<(), ConfigError> {
+    // Given
+    let source = "appearance { emphasis \"word\"; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(config.emphasis, Emphasis::Word);
+    Ok(())
+}
+
+#[test]
+fn grapheme_emphasis_can_be_selected() -> Result<(), ConfigError> {
+    // Given
+    let source = "appearance { emphasis \"grapheme\"; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(config.emphasis, Emphasis::Grapheme);
+    Ok(())
+}
+
+#[test]
+fn inline_emphasis_can_be_disabled() -> Result<(), ConfigError> {
+    // Given
+    let source = "appearance { emphasis \"off\"; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(config.emphasis, Emphasis::Off);
+    Ok(())
+}
+
+#[test]
+fn unsupported_emphasis_lists_the_available_choices() {
+    // Given
+    let source = "appearance { emphasis \"chars\"; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(matches!(
+        result,
+        Err(ConfigError::Validation(ValidationError::ExpectedValue {
+            setting,
+            expected: "word, grapheme, or off",
+        })) if setting == "appearance.emphasis"
+    ));
+}
+
+#[test]
+fn emphasis_requires_a_string_value() {
+    // Given
+    let source = "appearance { emphasis 1; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(matches!(
+        result,
+        Err(ConfigError::Validation(ValidationError::ExpectedValue {
+            setting,
+            expected: "a string",
+        })) if setting == "emphasis"
+    ));
+}
+
+#[test]
+fn duplicate_emphasis_settings_are_rejected() {
+    // Given
+    let source = "appearance { emphasis \"word\"; emphasis \"off\"; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(matches!(
+        result,
+        Err(ConfigError::Validation(ValidationError::Duplicate { setting }))
+            if setting == "appearance.emphasis"
+    ));
 }
 #[test]
 fn bindings_add_and_remove_without_replacing_other_defaults() -> Result<(), ConfigError> {

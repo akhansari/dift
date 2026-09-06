@@ -8,6 +8,18 @@ use crate::{
 use kdl::{KdlDocument, KdlNode};
 use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
 
+/// Granularity of emphasis within changed lines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Emphasis {
+    /// Emphasize whole Unicode words.
+    #[default]
+    Word,
+    /// Emphasize changed user-perceived characters.
+    Grapheme,
+    /// Retain line colors without within-line emphasis.
+    Off,
+}
+
 /// Application settings for input, appearance, and repository updates.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -19,6 +31,8 @@ pub struct Config {
     pub theme: String,
     /// Whether to start with a side-by-side diff layout.
     pub split: bool,
+    /// Granularity of emphasis within changed lines in either layout.
+    pub emphasis: Emphasis,
     /// Thresholds for automatically loading file contents.
     pub limits: Limits,
     /// Interval between periodic repository scans in watch mode.
@@ -31,6 +45,7 @@ impl Default for Config {
             light: false,
             theme: "base16-ocean.dark".into(),
             split: false,
+            emphasis: Emphasis::default(),
             limits: Limits::default(),
             reconcile: Duration::from_secs(30),
         }
@@ -196,6 +211,20 @@ impl Config {
                                 }
                             }
                         }
+                        "emphasis" => {
+                            config.emphasis = match string_value(child)? {
+                                "word" => Emphasis::Word,
+                                "grapheme" => Emphasis::Grapheme,
+                                "off" => Emphasis::Off,
+                                _ => {
+                                    return Err(ValidationError::ExpectedValue {
+                                        setting: "appearance.emphasis".into(),
+                                        expected: "word, grapheme, or off",
+                                    }
+                                    .into());
+                                }
+                            }
+                        }
                         _ => {
                             return Err(ValidationError::Unknown {
                                 setting: format!("appearance setting {child_name}"),
@@ -249,7 +278,7 @@ impl Config {
     pub fn template() -> String {
         let config = Self::default();
         let mut text = String::from(
-            "// dift configuration. Omitted settings retain defaults.\n// Keys are single events: ctrl-q, shift-tab, alt-j, etc.\n// Bindings support do=\"set\" (default), do=\"add\", do=\"remove\".\nappearance {\n    mode \"dark\"\n    theme \"base16-ocean.dark\"\n    layout \"unified\"\n}\nlimits {\n    max-file-bytes 2097152\n    max-diff-lines 20000\n}\nwatch {\n    reconcile-seconds 30\n}\nkeybindings {\n",
+            "// dift configuration. Omitted settings retain defaults.\n// Keys are single events: ctrl-q, shift-tab, alt-j, etc.\n// Bindings support do=\"set\" (default), do=\"add\", do=\"remove\".\nappearance {\n    mode \"dark\"\n    theme \"base16-ocean.dark\"\n    layout \"unified\"\n    emphasis \"word\" // word, grapheme, or off\n}\nlimits {\n    max-file-bytes 2097152\n    max-diff-lines 20000\n}\nwatch {\n    reconcile-seconds 30\n}\nkeybindings {\n",
         );
         for scope in Scope::ALL {
             text.push_str(&format!("    {} {{\n", scope.name()));

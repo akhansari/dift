@@ -1,21 +1,17 @@
-use super::{Cancellation, Cancelled};
-use crate::model::{Change, LineKind, SourceLine};
-use similar::{ChangeTag, TextDiff};
+use super::{
+    Cancellation, Cancelled,
+    refine::{self, ALGORITHMS, Pair},
+};
+use crate::{
+    config::Emphasis,
+    model::{Change, LineKind, SourceLine},
+};
 use std::{
     collections::BTreeMap,
     ops::Range,
     sync::Arc,
     time::{Duration, Instant},
 };
-
-/// Aligned old and new line indices within a hunk.
-#[derive(Clone, Copy)]
-pub(super) struct Pair {
-    /// Zero-based hunk index of the removed line, when present.
-    pub old: Option<usize>,
-    /// Zero-based hunk index of the added line, when present.
-    pub new: Option<usize>,
-}
 
 /// Alignment and inline emphasis for a contiguous block of changed lines.
 pub(super) struct Block {
@@ -69,7 +65,7 @@ impl Prepared {
 /// One allowance shared by every file and hunk in a rendering operation.
 pub(super) struct WorkBudget {
     remaining: Duration,
-    /// Number of comparison operations started within this budget.
+    /// Number of refinement operations started within this budget.
     pub comparisons: u64,
 }
 impl WorkBudget {
@@ -80,7 +76,7 @@ impl WorkBudget {
         }
     }
     fn run<T>(&mut self, maximum: Duration, operation: impl FnOnce(Duration) -> T) -> Option<T> {
-        if self.remaining.is_zero() {
+        if self.remaining.is_zero() || maximum.is_zero() {
             return None;
         }
         let start = Instant::now();
@@ -95,6 +91,7 @@ pub(super) fn prepare(
     hash: u64,
     change: Arc<Change>,
     refined: bool,
+    emphasis_mode: Emphasis,
     budget: &mut WorkBudget,
     cancel: &Cancellation,
 ) -> Result<Prepared, Cancelled> {
@@ -125,20 +122,33 @@ pub(super) fn prepare(
                 .collect();
             let pairs = align(&hunk.lines, &old, &new, refined, budget, cancel)?;
             let mut emphasis = BTreeMap::new();
-            if refined {
+            if refined && emphasis_mode != Emphasis::Off {
                 for pair in &pairs {
                     cancel.check()?;
                     if let (Some(a), Some(b)) = (pair.old, pair.new) {
                         let old = &hunk.lines[a].text;
                         let new = &hunk.lines[b].text;
-                        if old.len().max(new.len()) <= 4096
-                            && let Some((left, right)) = budget
+                        if old != new && old.len().max(new.len()) <= 4096 {
+                            let ranges = budget
                                 .run(Duration::from_millis(3), |timeout| {
-                                    emphasize(old, new, timeout)
+                                    refine::emphasize(
+                                        old,
+                                        new,
+                                        ALGORITHMS.inline,
+                                        emphasis_mode,
+                                        Instant::now() + timeout,
+                                        cancel,
+                                    )
                                 })
-                        {
-                            emphasis.insert(a, left);
-                            emphasis.insert(b, right);
+                                .transpose()?;
+                            if let Some((left, right)) = ranges {
+                                if !left.is_empty() {
+                                    emphasis.insert(a, left);
+                                }
+                                if !right.is_empty() {
+                                    emphasis.insert(b, right);
+                                }
+                            }
                         }
                     }
                 }
@@ -171,92 +181,30 @@ fn align(
     budget: &mut WorkBudget,
     cancel: &Cancellation,
 ) -> Result<Vec<Pair>, Cancelled> {
-    let (mut i, mut j) = (0, 0);
-    let mut pairs = Vec::new();
-    while i < old.len() && j < new.len() {
-        cancel.check()?;
-        let mut ratio = |a: usize, b: usize| {
-            let (a, b) = (&lines[a].text, &lines[b].text);
-            // Reserve at least half the shared allowance for word emphasis.
-            if !refined
-                || budget.remaining <= Duration::from_millis(10)
-                || a.len().max(b.len()) > 2048
-            {
-                return 1.0;
-            }
-            budget
-                .run(Duration::from_millis(1), |timeout| {
-                    TextDiff::configure()
-                        .timeout(timeout)
-                        .diff_chars(a, b)
-                        .ratio()
-                })
-                .unwrap_or(1.0)
-        };
-        let current = ratio(old[i], new[j]);
-        if current < 0.65 {
-            let next_old = old.get(i + 1).map(|a| ratio(*a, new[j])).unwrap_or(0.0);
-            let next_new = new.get(j + 1).map(|b| ratio(old[i], *b)).unwrap_or(0.0);
-            if next_old > current.max(0.65) && next_old >= next_new {
-                pairs.push(Pair {
-                    old: Some(old[i]),
-                    new: None,
-                });
-                i += 1;
-                continue;
-            }
-            if next_new > current.max(0.65) {
-                pairs.push(Pair {
-                    old: None,
-                    new: Some(new[j]),
-                });
-                j += 1;
-                continue;
-            }
-        }
-        pairs.push(Pair {
-            old: Some(old[i]),
-            new: Some(new[j]),
-        });
-        i += 1;
-        j += 1;
+    // Keep alignment's allowance consistent across emphasis modes.
+    // Preserve ten milliseconds of the shared work allowance for inline emphasis.
+    let maximum = budget
+        .remaining
+        .saturating_sub(Duration::from_millis(10))
+        .min(Duration::from_millis(3));
+    let pairs = if refined {
+        budget
+            .run(maximum, |timeout| {
+                refine::align(
+                    lines,
+                    old,
+                    new,
+                    ALGORITHMS,
+                    Instant::now() + timeout,
+                    cancel,
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    match pairs {
+        Some(pairs) => Ok(pairs),
+        None => refine::positional(old, new, cancel),
     }
-    pairs.extend(old[i..].iter().map(|i| Pair {
-        old: Some(*i),
-        new: None,
-    }));
-    pairs.extend(new[j..].iter().map(|i| Pair {
-        old: None,
-        new: Some(*i),
-    }));
-    Ok(pairs)
-}
-
-fn emphasize(old: &str, new: &str, timeout: Duration) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-    let diff = TextDiff::configure()
-        .timeout(timeout)
-        .diff_unicode_words(old, new);
-    if diff.ratio() < 0.25 {
-        return (Vec::new(), Vec::new());
-    }
-    let (mut a, mut b) = (0, 0);
-    let (mut left, mut right) = (Vec::new(), Vec::new());
-    for change in diff.iter_all_changes() {
-        let len = change.value().len();
-        match change.tag() {
-            ChangeTag::Equal => {
-                a += len;
-                b += len;
-            }
-            ChangeTag::Delete => {
-                left.push(a..a + len);
-                a += len;
-            }
-            ChangeTag::Insert => {
-                right.push(b..b + len);
-                b += len;
-            }
-        }
-    }
-    (left, right)
 }
