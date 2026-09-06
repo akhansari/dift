@@ -18,7 +18,12 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use std::{ops::Range, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    ops::Range,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use syntax::{SyntaxCache, SyntaxColors};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
@@ -378,30 +383,21 @@ impl Renderer {
         for (hash, change) in &versions {
             prepared.push(self.prepare(*hash, change, false, &mut budget, cancel)?);
         }
-        if spec.preview_rows > 0 {
-            let document =
-                self.preview(&versions, &prepared, spec, Some(spec.preview_rows), cancel)?;
-            let partial = document.partial;
-            cancel.check()?;
-            if !publish(RenderUpdate {
-                document: Arc::new(document),
-                finished: false,
-            }) {
-                return Err(Cancelled);
-            }
-            cancel.check()?;
-            if partial {
-                let document = self.preview(&versions, &prepared, spec, None, cancel)?;
-                cancel.check()?;
-                if !publish(RenderUpdate {
-                    document: Arc::new(document),
-                    finished: false,
-                }) {
-                    return Err(Cancelled);
-                }
-            }
-        } else {
-            let document = self.preview(&versions, &prepared, spec, None, cancel)?;
+        let limit = (spec.preview_rows > 0).then_some(spec.preview_rows);
+        let mut documents = self.preview_files(&prepared, spec, limit, cancel)?;
+        let document = compose(&versions, &documents, self.config.light, limit, cancel)?;
+        let partial = document.partial;
+        cancel.check()?;
+        if !publish(RenderUpdate {
+            document: Arc::new(document),
+            finished: false,
+        }) {
+            return Err(Cancelled);
+        }
+        cancel.check()?;
+        if partial {
+            documents = self.preview_files(&prepared, spec, None, cancel)?;
+            let document = compose(&versions, &documents, self.config.light, None, cancel)?;
             cancel.check()?;
             if !publish(RenderUpdate {
                 document: Arc::new(document),
@@ -415,11 +411,11 @@ impl Renderer {
             refined.push(self.prepare(*hash, change, true, &mut budget, cancel)?);
         }
         self.stats.detail_comparisons += budget.comparisons;
-        let mut documents = Vec::new();
-        for item in refined {
+        let mut last_publication: Option<Instant> = None;
+        for (index, item) in refined.into_iter().enumerate() {
             cancel.check()?;
             if let Some(cached) = self.cached_layout(item.hash, &item.change, spec, true) {
-                documents.push(cached);
+                documents[index] = cached;
                 continue;
             }
             let change = &item.change;
@@ -463,7 +459,22 @@ impl Renderer {
                 cancel,
             )?);
             self.remember_layout(item, spec, true, Arc::clone(&document));
-            documents.push(document);
+            documents[index] = document;
+            // Keep the complete plain remainder available for search and scrolling
+            // while completed files gain colors. Bound recomposition and UI traffic.
+            if index + 1 < documents.len()
+                && last_publication.is_none_or(|time| time.elapsed() >= Duration::from_millis(33))
+            {
+                let document = compose(&versions, &documents, self.config.light, None, cancel)?;
+                cancel.check()?;
+                if !publish(RenderUpdate {
+                    document: Arc::new(document),
+                    finished: false,
+                }) {
+                    return Err(Cancelled);
+                }
+                last_publication = Some(Instant::now());
+            }
         }
         let document = compose(&versions, &documents, self.config.light, None, cancel)?;
         cancel.check()?;
@@ -549,14 +560,13 @@ impl Renderer {
         let bytes = entry.bytes();
         self.layouts.insert(entry, bytes);
     }
-    fn preview(
+    fn preview_files(
         &mut self,
-        versions: &[(u64, &Change)],
         prepared: &[Arc<Prepared>],
         spec: RenderSpec<'_>,
         limit: Option<usize>,
         cancel: &Cancellation,
-    ) -> Result<Document, Cancelled> {
+    ) -> Result<Vec<Arc<Document>>, Cancelled> {
         let mut documents = Vec::new();
         let mut rows = 0;
         for item in prepared {
@@ -586,7 +596,7 @@ impl Renderer {
             rows += document.rows.len();
             documents.push(document);
         }
-        compose(versions, &documents, self.config.light, limit, cancel)
+        Ok(documents)
     }
 }
 

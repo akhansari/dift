@@ -9,6 +9,7 @@ use std::{
     path::{Component, PathBuf},
     sync::mpsc,
 };
+
 use std::{
     path::Path,
     sync::{
@@ -17,6 +18,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+#[cfg(test)]
+mod coverage;
 
 /// Coalesces requests without losing changes that arrive during collection.
 pub(super) struct Refresh {
@@ -137,6 +141,10 @@ impl Batch {
         !self.force && self.paths.is_empty()
     }
 
+    pub(super) fn changes_directories(&self) -> bool {
+        self.force || self.structure
+    }
+
     fn add(&mut self, event: notify::Event) {
         self.force |= event.need_rescan() || event.paths.is_empty();
         self.structure |= !matches!(
@@ -206,8 +214,7 @@ impl Inbox {
 
 pub(super) struct Watches {
     watcher: Option<RecommendedWatcher>,
-    recursive: Vec<PathBuf>,
-    external: BTreeSet<PathBuf>,
+    registered: BTreeSet<PathBuf>,
     degraded: Arc<AtomicBool>,
 }
 
@@ -231,7 +238,12 @@ impl Watches {
             _ => {}
         };
         let watcher = enabled
-            .then(|| notify::recommended_watcher(callback))
+            .then(|| {
+                RecommendedWatcher::new(
+                    callback,
+                    notify::Config::default().with_follow_symlinks(false),
+                )
+            })
             .and_then(|result| match result {
                 Ok(watcher) => Some(watcher),
                 Err(_) => {
@@ -241,16 +253,17 @@ impl Watches {
             });
         let mut watches = Self {
             watcher,
-            recursive: Vec::new(),
-            external: BTreeSet::new(),
+            registered: BTreeSet::new(),
             degraded,
         };
         for path in [&repo.root, &repo.common_dir, &repo.git_dir] {
-            if !watches.recursive.iter().any(|root| path.starts_with(root))
+            if !watches.registered.contains(path)
                 && let Some(watcher) = &mut watches.watcher
             {
-                match watcher.watch(path, RecursiveMode::Recursive) {
-                    Ok(()) => watches.recursive.push(path.clone()),
+                match watcher.watch(path, RecursiveMode::NonRecursive) {
+                    Ok(()) => {
+                        watches.registered.insert(path.clone());
+                    }
                     Err(_) => {
                         watches.degraded.store(true, Ordering::Relaxed);
                     }
@@ -260,36 +273,108 @@ impl Watches {
         (watches, inbox)
     }
 
-    pub(super) fn update_external(&mut self, context: &WatchContext) {
+    /// Expand coverage only after the first snapshot has reached the UI. A true
+    /// result requires a follow-up snapshot to close gaps during registration.
+    pub(super) fn reconcile(
+        &mut self,
+        filter: &mut EventFilter,
+        collector: &Collector,
+        batch: &Batch,
+        periodic: bool,
+    ) -> bool {
+        if self.watcher.is_none() {
+            return false;
+        }
+        let mut desired = BTreeSet::new();
+        let mut pending = vec![
+            filter.context.root.clone(),
+            filter.context.git_dir.clone(),
+            filter.context.common_dir.clone(),
+        ];
+        while let Some(path) = pending.pop() {
+            if !desired.insert(path.clone()) {
+                continue;
+            }
+            let entries = match fs::read_dir(&path) {
+                Ok(entries) => entries,
+                Err(_) => {
+                    self.degraded.store(true, Ordering::Relaxed);
+                    // Keep known coverage when a directory becomes unreadable.
+                    desired.extend(
+                        self.registered
+                            .iter()
+                            .filter(|registered| registered.starts_with(&path))
+                            .cloned(),
+                    );
+                    continue;
+                }
+            };
+            for entry in entries {
+                let directory = entry.and_then(|entry| {
+                    // file_type does not follow directory symlinks, including
+                    // package-manager links into dependency stores.
+                    entry
+                        .file_type()
+                        .map(|kind| kind.is_dir().then(|| entry.path()))
+                });
+                match directory {
+                    Ok(Some(path)) if filter.should_collect_path(&path, collector) => {
+                        pending.push(path);
+                    }
+                    Err(_) => {
+                        self.degraded.store(true, Ordering::Relaxed);
+                        desired.extend(
+                            self.registered
+                                .iter()
+                                .filter(|registered| registered.starts_with(&path))
+                                .cloned(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Watching parents catches atomic replacement and missing resources.
+        desired.extend(filter.context.resources.iter().filter_map(|path| {
+            path.ancestors()
+                .skip(1)
+                .find(|parent| parent.is_dir())
+                .map(Path::to_owned)
+        }));
         let Some(watcher) = &mut self.watcher else {
-            return;
+            return false;
         };
-        let desired: BTreeSet<_> = context
-            .resources
+        // A removed/recreated directory can keep the same name but lose its
+        // native watch. Periodic reconciliation also repairs missed events.
+        let stale: Vec<_> = self
+            .registered
             .iter()
-            .filter(|path| !self.recursive.iter().any(|root| path.starts_with(root)))
-            // Watching parents catches atomic replacement, including a previously missing file.
-            .filter_map(|path| {
-                path.ancestors()
-                    .skip(1)
-                    .find(|parent| parent.is_dir())
-                    .map(Path::to_owned)
+            .filter(|path| {
+                !desired.contains(*path)
+                    || periodic
+                    || batch.force
+                    || (batch.structure && batch.paths.iter().any(|event| path.starts_with(event)))
             })
+            .cloned()
             .collect();
+        for path in stale {
+            let _ = watcher.unwatch(&path);
+            self.registered.remove(&path);
+        }
+        let mut expanded = false;
         let mut registered = BTreeSet::new();
         for path in desired {
-            if self.external.contains(&path)
-                || watcher.watch(&path, RecursiveMode::NonRecursive).is_ok()
-            {
+            if self.registered.contains(&path) {
                 registered.insert(path);
+            } else if watcher.watch(&path, RecursiveMode::NonRecursive).is_ok() {
+                registered.insert(path);
+                expanded = true;
             } else {
                 self.degraded.store(true, Ordering::Relaxed);
             }
         }
-        for path in self.external.difference(&registered) {
-            let _ = watcher.unwatch(path);
-        }
-        self.external = registered;
+        self.registered = registered;
+        expanded
     }
 }
 
@@ -304,6 +389,10 @@ impl EventFilter {
         batch.force
             || batch.paths.iter().any(|path| {
                 self.context.resource_changed(path)
+                    || matches!(
+                        path.file_name().and_then(|name| name.to_str()),
+                        Some(".gitignore" | ".gitmodules" | ".git")
+                    )
                     || ((path.starts_with(&self.context.git_dir)
                         || path.starts_with(&self.context.common_dir))
                         && relevant_path(path, &self.context.git_dir, &self.context.common_dir))
@@ -354,68 +443,72 @@ impl EventFilter {
             self.matcher = Self::matcher(&self.context);
             self.checked_directories.clear();
         }
-        batch.paths.iter().any(|path| {
-            let context = &self.context;
-            if context.resource_changed(path) {
-                return true;
-            }
-            if path.starts_with(&context.git_dir) || path.starts_with(&context.common_dir) {
-                return relevant_path(path, &context.git_dir, &context.common_dir);
-            }
-            let Ok(relative) = path.strip_prefix(&context.root) else {
-                // Parent watches also report siblings of external configuration files.
-                return false;
-            };
-            if relative.as_os_str().is_empty()
-                || relative
-                    .components()
-                    .any(|part| matches!(part, Component::ParentDir))
-                || matches!(
-                    relative.file_name().and_then(|name| name.to_str()),
-                    Some(".gitignore" | ".gitattributes" | ".gitmodules" | ".git")
-                )
-                || collector.may_be_tracked(relative)
-            {
-                return true;
-            }
-            // ignore's hierarchical loader suppresses I/O errors. Check new directories
-            // ourselves so an unreadable negation never silently hides a change.
-            for directory in relative.ancestors().skip(1) {
-                if self.checked_directories.insert(directory.to_owned()) {
-                    let rule = context.root.join(directory).join(".gitignore");
-                    let readable = match fs::symlink_metadata(&rule) {
-                        Ok(metadata) if metadata.is_file() => fs::read_to_string(rule).is_ok(),
-                        Ok(_) => true,
-                        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
-                    };
-                    if !readable {
-                        self.matcher = None;
-                    }
+        batch
+            .paths
+            .iter()
+            .any(|path| self.should_collect_path(path, collector))
+    }
+
+    fn should_collect_path(&mut self, path: &Path, collector: &Collector) -> bool {
+        let context = &self.context;
+        if context.resource_changed(path) {
+            return true;
+        }
+        if path.starts_with(&context.git_dir) || path.starts_with(&context.common_dir) {
+            return relevant_path(path, &context.git_dir, &context.common_dir);
+        }
+        let Ok(relative) = path.strip_prefix(&context.root) else {
+            // Parent watches also report siblings of external configuration files.
+            return false;
+        };
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+            || matches!(
+                relative.file_name().and_then(|name| name.to_str()),
+                Some(".gitignore" | ".gitattributes" | ".gitmodules" | ".git")
+            )
+            || collector.may_be_tracked(relative)
+        {
+            return true;
+        }
+        // ignore's hierarchical loader suppresses I/O errors. Check new directories
+        // ourselves so an unreadable negation never silently hides a change.
+        for directory in relative.ancestors().skip(1) {
+            if self.checked_directories.insert(directory.to_owned()) {
+                let rule = context.root.join(directory).join(".gitignore");
+                let readable = match fs::symlink_metadata(&rule) {
+                    Ok(metadata) if metadata.is_file() => fs::read_to_string(rule).is_ok(),
+                    Ok(_) => true,
+                    Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+                };
+                if !readable {
+                    self.matcher = None;
                 }
             }
-            let Some(matcher) = &mut self.matcher else {
-                return true;
-            };
-            let kind = match fs::symlink_metadata(path) {
-                Ok(metadata) => Some(metadata.is_dir()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(_) => return true,
-            };
-            let (file_match, file_error) =
-                matcher.matched_with_errors(relative, kind.unwrap_or(false));
-            let (dir_match, dir_error) = if kind.is_none() {
-                matcher.matched_with_errors(relative, true)
-            } else {
-                (file_match.clone(), None)
-            };
-            if file_error.is_some() || dir_error.is_some() {
-                // Errors are only reported while loading. Disable this generation, including cached matches.
-                self.matcher = None;
-                true
-            } else {
-                !file_match.is_ignore() || !dir_match.is_ignore()
-            }
-        })
+        }
+        let Some(matcher) = &mut self.matcher else {
+            return true;
+        };
+        let kind = match fs::symlink_metadata(path) {
+            Ok(metadata) => Some(metadata.is_dir()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return true,
+        };
+        let (file_match, file_error) = matcher.matched_with_errors(relative, kind.unwrap_or(false));
+        let (dir_match, dir_error) = if kind.is_none() {
+            matcher.matched_with_errors(relative, true)
+        } else {
+            (file_match.clone(), None)
+        };
+        if file_error.is_some() || dir_error.is_some() {
+            // Errors are only reported while loading. Disable this generation, including cached matches.
+            self.matcher = None;
+            true
+        } else {
+            !file_match.is_ignore() || !dir_match.is_ignore()
+        }
     }
 }
 

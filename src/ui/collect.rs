@@ -21,6 +21,8 @@ pub(super) struct Worker {
     requests: mpsc::Sender<BTreeSet<PathBuf>>,
     pub updates: mpsc::Receiver<Update>,
     pub degraded: Arc<AtomicBool>,
+    #[cfg(test)]
+    initialized: mpsc::Receiver<()>,
 }
 
 impl Worker {
@@ -32,21 +34,32 @@ impl Worker {
     ) -> io::Result<Self> {
         let (requests, receive) = mpsc::channel();
         let (send, updates) = mpsc::channel();
+        #[cfg(test)]
+        let (initialized_send, initialized) = mpsc::channel();
         let degraded = Arc::new(AtomicBool::new(false));
         let watcher_degraded = Arc::clone(&degraded);
         thread::Builder::new()
             .name("git-collect".into())
             .spawn(move || {
                 let watching = matches!(mode, Mode::Watch);
-                // Register before the first snapshot, so startup changes stay pending.
+                // Bootstrap shallow watches without traversing the working tree.
                 let (mut watches, inbox) = Watches::new(&paths, watcher_degraded, watching);
                 let mut collector = None;
                 let mut filter: Option<EventFilter> = None;
                 let mut loaded = BTreeSet::new();
                 let mut refresh = Refresh::new(Instant::now());
                 let mut pending = Batch::default();
+                let mut coverage_refresh = false;
+                #[cfg(test)]
+                let mut initialized_send = Some(initialized_send);
                 loop {
-                    let mut force = match receive.recv_timeout(Duration::from_millis(33)) {
+                    let coverage_changed = std::mem::take(&mut coverage_refresh);
+                    let timeout = if coverage_changed {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_millis(33)
+                    };
+                    let mut force = match receive.recv_timeout(timeout) {
                         Ok(request) => {
                             loaded = request;
                             true
@@ -54,6 +67,7 @@ impl Worker {
                         Err(mpsc::RecvTimeoutError::Timeout) => false,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
+                    force |= coverage_changed;
                     for request in receive.try_iter() {
                         loaded = request;
                         force = true;
@@ -70,6 +84,7 @@ impl Worker {
                     if batch.is_empty() && !force && !periodic {
                         continue;
                     }
+                    let mut reconcile_watches = false;
                     let result = (|| -> Result<Option<Snapshot>, GitError> {
                         if collector.is_none() {
                             collector = Some(Collector::new(paths.clone())?);
@@ -93,14 +108,9 @@ impl Worker {
                         if full {
                             collector.refresh_configuration(true)?;
                         }
-                        if watching {
-                            watches.update_external(&collector.watch_context()?);
-                        }
                         let snapshot = collector.snapshot(&mode, limits, &loaded)?;
                         let context = collector.watch_context()?;
-                        if watching {
-                            watches.update_external(&context);
-                        }
+                        reconcile_watches = watching && (full || batch.changes_directories());
                         filter = Some(EventFilter::new(context));
                         Ok(Some(snapshot))
                     })();
@@ -116,12 +126,27 @@ impl Worker {
                     if send.send(Update::Finished(result)).is_err() {
                         break;
                     }
+                    if reconcile_watches
+                        && let (Some(filter), Some(collector)) = (&mut filter, &collector)
+                    {
+                        // Publish first, then catch edits made before their directories
+                        // were watched, even if those edits generated no event.
+                        coverage_refresh = watches.reconcile(filter, collector, &batch, periodic);
+                    }
+                    // Let integration fixtures observe the end of startup without
+                    // sleeps or a manual refresh that could mask missing watches.
+                    #[cfg(test)]
+                    if !coverage_refresh && let Some(ready) = initialized_send.take() {
+                        let _ = ready.send(());
+                    }
                 }
             })?;
         Ok(Self {
             requests,
             updates,
             degraded,
+            #[cfg(test)]
+            initialized,
         })
     }
 
@@ -145,6 +170,25 @@ mod tests {
             }
         }
     }
+
+    fn wait_for_source(worker: &Worker, path: &str, source: &str) -> AppResult<Snapshot> {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            if let Update::Finished(result) = worker
+                .updates
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))?
+            {
+                let snapshot = result?;
+                if snapshot.changes.iter().any(|change| {
+                    change.path == std::path::Path::new(path)
+                        && change.new_source.as_deref() == Some(source)
+                }) {
+                    return Ok(snapshot);
+                }
+            }
+        }
+    }
+
     fn watching(fixture: &Fixture) -> AppResult<Worker> {
         let worker = Worker::spawn(
             fixture.repo()?,
@@ -153,7 +197,12 @@ mod tests {
             Duration::from_secs(3600),
         )?;
         worker.request(BTreeSet::new())?;
-        let _initial = next_snapshot(&worker)?;
+        worker.initialized.recv_timeout(Duration::from_secs(4))?;
+        for update in worker.updates.try_iter() {
+            if let Update::Finished(result) = update {
+                result?;
+            }
+        }
         Ok(worker)
     }
 
@@ -255,6 +304,77 @@ mod tests {
         assert!(snapshot.changes.iter().any(|change| change.path
             == std::path::Path::new("target/output")
             && change.new_source.as_deref() == Some("revealed\n")));
+        Ok(())
+    }
+
+    #[test]
+    fn files_created_in_new_nested_directories_are_collected() -> AppResult<()> {
+        // Given
+        let fixture = Fixture::new("")?;
+        let worker = watching(&fixture)?;
+        // When
+        fixture.write("new/nested/file.txt", "created\n")?;
+        let snapshot = wait_for_source(&worker, "new/nested/file.txt", "created\n")?;
+        // Then
+        assert_eq!(snapshot.changes.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn newly_visible_directories_receive_watches_for_later_edits() -> AppResult<()> {
+        // Given
+        let fixture = Fixture::new("target/\n")?;
+        fixture.write("target/nested/file.txt", "before\n")?;
+        let worker = watching(&fixture)?;
+        fixture.write(".gitignore", "")?;
+        let _revealed = wait_for_source(&worker, "target/nested/file.txt", "before\n")?;
+        // When
+        fixture.write("target/nested/file.txt", "after\n")?;
+        let snapshot = wait_for_source(&worker, "target/nested/file.txt", "after\n")?;
+        // Then
+        assert!(
+            snapshot
+                .changes
+                .iter()
+                .any(|change| change.path == std::path::Path::new("target/nested/file.txt"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_moved_directory_receives_watches_for_later_edits() -> AppResult<()> {
+        // Given
+        let fixture = Fixture::new("")?;
+        fixture.write("old/nested/file.txt", "before\n")?;
+        let worker = watching(&fixture)?;
+        std::fs::rename(fixture.root.join("old"), fixture.root.join("new"))?;
+        let _moved = wait_for_source(&worker, "new/nested/file.txt", "before\n")?;
+        // When
+        fixture.write("new/nested/file.txt", "after\n")?;
+        let snapshot = wait_for_source(&worker, "new/nested/file.txt", "after\n")?;
+        // Then
+        assert_eq!(snapshot.changes.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn edits_after_the_initial_snapshot_are_collected_during_startup() -> AppResult<()> {
+        // Given
+        let fixture = Fixture::new("")?;
+        fixture.write("src/nested/file.txt", "before\n")?;
+        let worker = Worker::spawn(
+            fixture.repo()?,
+            Mode::Watch,
+            Limits::default(),
+            Duration::from_secs(3600),
+        )?;
+        worker.request(BTreeSet::new())?;
+        let _initial = next_snapshot(&worker)?;
+        // When
+        fixture.write("src/nested/file.txt", "startup edit\n")?;
+        let snapshot = wait_for_source(&worker, "src/nested/file.txt", "startup edit\n")?;
+        // Then
+        assert_eq!(snapshot.changes.len(), 1);
         Ok(())
     }
 }

@@ -73,6 +73,29 @@ fn reading_state() -> (State, u64) {
 }
 
 #[test]
+fn intermediate_highlighting_preserves_scroll_and_search_position() {
+    // Given
+    let (mut state, generation) = reading_state();
+    state.scroll_by(1, true, 1);
+    let result = RenderResult {
+        generation,
+        document: document(&["one", "two", "three"], false),
+        finished: false,
+    };
+    // When
+    let changed = state.apply_render(result, 1);
+    // Then
+    assert!(changed);
+    assert!(state.rendering());
+    assert_eq!(
+        state.document().rows[state.scroll()].line.to_string(),
+        "two"
+    );
+    assert_eq!(state.match_index(), Some(0));
+    assert_eq!(state.document().hits.len(), 1);
+}
+
+#[test]
 fn a_late_prefix_preview_preserves_the_users_new_scroll_position() {
     // Given
     let (mut state, generation) = reading_state();

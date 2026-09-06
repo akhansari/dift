@@ -29,6 +29,8 @@ class Screen:
     def __init__(self, width=120, height=35):
         self.width, self.height = width, height
         self.rows = [[" "] * width for _ in range(height)]
+        self.foregrounds = [[None] * width for _ in range(height)]
+        self.foreground = None
         self.x = self.y = 0
         self.pending = ""
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -63,10 +65,14 @@ class Screen:
                     self.x = max(0, self.x - first)
                 elif final == "J" and args[0] in (2, 3):
                     self.rows = [[" "] * self.width for _ in range(self.height)]
+                    self.foregrounds = [[None] * self.width for _ in range(self.height)]
+                elif final == "m":
+                    self.set_colors(args)
                 elif final == "K" and self.y < self.height:
                     start = 0 if args[0] in (1, 2) else self.x
                     end = self.width if args[0] in (0, 2) else self.x + 1
                     self.rows[self.y][start:end] = [" "] * (end - start)
+                    self.foregrounds[self.y][start:end] = [self.foreground] * (end - start)
             elif self.pending.startswith("\x1b"):
                 if len(self.pending) < 2:
                     return
@@ -86,7 +92,25 @@ class Screen:
                     width = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in "WF" else 1)
                     if 0 <= self.y < self.height and 0 <= self.x < self.width:
                         self.rows[self.y][self.x] = ch
+                        self.foregrounds[self.y][self.x] = self.foreground
                     self.x += width
+
+    def set_colors(self, args):
+        position = 0
+        while position < len(args):
+            code = args[position]
+            if code in (0, 39):
+                self.foreground = None
+            elif 30 <= code <= 37 or 90 <= code <= 97:
+                self.foreground = code
+            elif code in (38, 48, 58) and position + 1 < len(args):
+                mode = args[position + 1]
+                size = {2: 3, 5: 1}.get(mode, 0)
+                color = tuple(args[position + 2:position + 2 + size])
+                if code == 38 and len(color) == size and size:
+                    self.foreground = color
+                position += 1 + size
+            position += 1
 
     @property
     def text(self):
@@ -94,7 +118,7 @@ class Screen:
 
 
 class Session:
-    def __init__(self, cwd, config):
+    def __init__(self, cwd, config, env=None):
         self.master, self.slave = pty.openpty()
         self.original = termios.tcgetattr(self.slave)
         self.screen = Screen()
@@ -104,7 +128,7 @@ class Session:
             os.close(self.master)
             os.login_tty(self.slave)
             os.chdir(cwd)
-            os.execve(str(BINARY), [str(BINARY), "--config", str(config)], {**os.environ, "TERM": "xterm-256color"})
+            os.execve(str(BINARY), [str(BINARY), "--config", str(config)], {**os.environ, "TERM": "xterm-256color", **(env or {})})
         self.status = None
         self.raw = bytearray()
 
@@ -518,7 +542,7 @@ class TerminalSmoke(unittest.TestCase):
         path, source = self.syntax_fixture()
         path.write_text(source + 'export const last = "INTERMEDIATE";\n')
         self.session.wait("INTERMEDIATE", timeout=4)
-        self.assertIn("Rendering", self.session.screen.text)
+        self.session.wait("Rendering", timeout=4)
         # When
         path.write_text(source + 'export const last = "FINAL_VALUE";\n')
         # Then
@@ -549,7 +573,8 @@ class TerminalSmoke(unittest.TestCase):
         self.git("commit", "-m", "large file")
         large.write_text(source + 'export const last = "LATE_VALUE";\n')
         self.session.wait("LATE_VALUE", timeout=4)
-        self.assertIn("Rendering", self.session.screen.text)
+        # Text can arrive before the footer, or during a watch-coverage rescan.
+        self.session.wait("Rendering", timeout=4)
         self.session.send("n")
         self.session.wait("a/large.ts · Unified", timeout=3)
         self.session.advance(0.2)

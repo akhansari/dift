@@ -61,10 +61,128 @@ fn source_content(document: &Document) -> String {
         .collect()
 }
 
+fn styled_source_lines(document: &Document) -> Vec<Line<'static>> {
+    document
+        .rows
+        .iter()
+        .filter(|row| !row.anchors.is_empty())
+        .map(|row| row.line.clone())
+        .collect()
+}
+
 fn language_snapshot(path: &str, text: &str) -> Snapshot {
     let mut snapshot = text_snapshot(text);
     snapshot.changes[0].path = path.into();
     snapshot
+}
+
+fn two_file_snapshot() -> Snapshot {
+    let mut snapshot = language_snapshot("first.ts", "const first = 1;");
+    snapshot
+        .changes
+        .extend(language_snapshot("second.ts", "const needle = 2;").changes);
+    snapshot
+}
+
+fn two_file_spec(snapshot: &Snapshot) -> RenderSpec<'_> {
+    RenderSpec {
+        snapshot,
+        selected: &[0, 1],
+        width: 100,
+        split: false,
+        query: "needle",
+        preview_rows: 0,
+    }
+}
+
+#[test]
+fn a_highlighted_file_is_published_with_the_searchable_plain_remainder() -> crate::AppResult<()> {
+    // Given
+    let mut renderer = Renderer::new(Config::default())?;
+    let snapshot = two_file_snapshot();
+    let mut updates = Vec::new();
+    // When
+    let result = renderer.render_progressive(
+        two_file_spec(&snapshot),
+        &Cancellation::default(),
+        |update| {
+            updates.push(update);
+            updates.len() < 2
+        },
+    );
+    // Then
+    assert_eq!(result, Err(Cancelled));
+    assert_eq!(updates.len(), 2);
+    let plain = &updates[0].document;
+    let enriched = &updates[1].document;
+    assert!(!updates[1].finished);
+    assert!(!enriched.partial);
+    assert_eq!(source_content(enriched), source_content(plain));
+    assert_eq!(enriched.hits.len(), 1);
+    assert_eq!(enriched.hits[0].row, plain.hits[0].row);
+    assert_ne!(
+        source_foreground(enriched, "const")?,
+        source_foreground(plain, "const")?
+    );
+    assert_eq!(renderer.stats().syntax_lines, 1);
+    Ok(())
+}
+
+#[test]
+fn changing_selection_after_a_highlighted_file_cancels_the_remainder() -> crate::AppResult<()> {
+    // Given
+    let mut renderer = Renderer::new(Config::default())?;
+    let snapshot = two_file_snapshot();
+    let latest = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let cancellation = Cancellation::new(Arc::clone(&latest), 1);
+    let mut updates = Vec::new();
+    // When
+    let result = renderer.render_progressive(two_file_spec(&snapshot), &cancellation, |update| {
+        updates.push(update);
+        if updates.len() == 2 {
+            latest.store(2, std::sync::atomic::Ordering::Relaxed);
+        }
+        true
+    });
+    // Then
+    assert_eq!(result, Err(Cancelled));
+    assert_eq!(updates.len(), 2);
+    assert_eq!(renderer.stats().syntax_lines, 1);
+    assert!(!updates[1].finished);
+    Ok(())
+}
+
+#[test]
+fn progressive_highlighting_finishes_with_the_same_colors_as_individual_files()
+-> crate::AppResult<()> {
+    // Given
+    let snapshot = two_file_snapshot();
+    let mut renderer = Renderer::new(Config::default())?;
+    let first = renderer.document(&snapshot, &[0], 100, false, "needle")?;
+    let second = renderer.document(&snapshot, &[1], 100, false, "needle")?;
+    let expected: Vec<_> = styled_source_lines(&first)
+        .into_iter()
+        .chain(styled_source_lines(&second))
+        .collect();
+    let mut renderer = Renderer::new(Config::default())?;
+    let mut updates = Vec::new();
+    // When
+    renderer.render_progressive(
+        two_file_spec(&snapshot),
+        &Cancellation::default(),
+        |update| {
+            updates.push(update);
+            true
+        },
+    )?;
+    // Then
+    let final_update = updates.last().ok_or("Missing final rendering")?;
+    let final_document = &final_update.document;
+    assert!(final_update.finished);
+    assert!(!final_document.partial);
+    assert_eq!(styled_source_lines(final_document), expected);
+    assert_eq!(final_document.hits.len(), 1);
+    Ok(())
 }
 
 fn source_foreground(document: &Document, token: &str) -> crate::AppResult<Color> {
