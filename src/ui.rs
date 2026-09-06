@@ -62,7 +62,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     let mut last_degraded = degraded.load(Ordering::Relaxed);
     let mut viewport = (0usize, 1usize);
     state.collection_started();
-    collecting.request(state.loaded.clone())?;
+    collecting.request(state.loaded().clone())?;
     loop {
         let degraded_now = degraded.load(Ordering::Relaxed);
         needs_draw |= degraded_now != last_degraded;
@@ -79,7 +79,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         let size = terminal.size()?;
         let (_, diff) = panes(
             Rect::new(0, 1, size.width, size.height.saturating_sub(3)),
-            state.sidebar,
+            state.sidebar(),
         );
         let new_viewport = (
             diff.width.saturating_sub(2) as usize,
@@ -107,7 +107,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                     watching,
                     degraded.load(Ordering::Relaxed),
                     &mut list_state,
-                    state.help_scroll,
+                    state.help_scroll(),
                 )
             })?;
             needs_draw = false;
@@ -133,7 +133,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
         if effects.collect {
-            collecting.request(state.loaded.clone())?;
+            collecting.request(state.loaded().clone())?;
         }
     }
     Ok(())
@@ -193,7 +193,7 @@ fn draw(
     let title = format!(
         " Δ WATCH  {}  ·  {}",
         repo.root.file_name().unwrap_or_default().to_string_lossy(),
-        state.snapshot.branch
+        state.snapshot().branch
     );
     frame.render_widget(
         Paragraph::new(title).style(
@@ -204,15 +204,15 @@ fn draw(
         ),
         layout[0],
     );
-    let (tree_area, diff_area) = panes(layout[1], state.sidebar);
+    let (tree_area, diff_area) = panes(layout[1], state.sidebar());
     if tree_area.width > 0 {
         let rows = state.tree(false);
-        list_state.select(rows.iter().position(|r| r.path == state.selection));
+        list_state.select(rows.iter().position(|r| r.path == state.selection()));
         let items: Vec<_> = rows
             .iter()
             .map(|row| {
                 let prefix = if row.directory {
-                    if state.collapsed.contains(&row.path) {
+                    if state.is_collapsed(&row.path) {
                         "▸"
                     } else {
                         "▾"
@@ -243,7 +243,7 @@ fn draw(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Changes · {count} "))
-                    .border_style(Style::default().fg(if state.focus == Scope::Tree {
+                    .border_style(Style::default().fg(if state.focus() == Scope::Tree {
                         palette.accent
                     } else {
                         palette.muted
@@ -259,12 +259,12 @@ fn draw(
             .highlight_symbol("▎");
         frame.render_stateful_widget(tree, tree_area, list_state);
     }
-    let scope = if state.selection.as_os_str().is_empty() {
+    let scope = if state.selection().as_os_str().is_empty() {
         "Repository".into()
     } else {
-        display_path(&state.selection)
+        display_path(state.selection())
     };
-    let mode = if state.split && diff_area.width >= 34 {
+    let mode = if state.split() && diff_area.width >= 34 {
         "Split"
     } else {
         "Unified"
@@ -273,9 +273,13 @@ fn draw(
         .borders(Borders::ALL)
         .title(format!(
             " {scope} · {mode}{} ",
-            if state.rendering { " · updating" } else { "" }
+            if state.rendering() {
+                " · updating"
+            } else {
+                ""
+            }
         ))
-        .border_style(Style::default().fg(if state.focus == Scope::Diff {
+        .border_style(Style::default().fg(if state.focus() == Scope::Diff {
             palette.accent
         } else {
             palette.muted
@@ -283,23 +287,23 @@ fn draw(
     let inner = diff_block.inner(diff_area);
     frame.render_widget(diff_block, diff_area);
     let rows: Vec<Line<'_>> = state
-        .document
+        .document()
         .rows
         .iter()
-        .skip(state.scroll)
+        .skip(state.scroll())
         .take(inner.height as usize)
         .map(|r| r.line.clone())
         .collect();
     frame.render_widget(Paragraph::new(rows).style(palette.base()), inner);
     let max_scroll = state
-        .document
+        .document()
         .rows
         .len()
         .saturating_sub(inner.height as usize);
     if !inner.is_empty() && max_scroll > 0 {
         // Ratatui counts scroll positions, including the last full viewport.
         let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
-            .position(state.scroll)
+            .position(state.scroll())
             .viewport_content_length(inner.height as usize);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -314,12 +318,12 @@ fn draw(
             &mut scrollbar_state,
         );
     }
-    let status = if let Some(error) = &state.error {
+    let status = if let Some(error) = state.error() {
         format!(" Error: {error}")
     } else {
-        let activity = if state.collecting {
+        let activity = if state.collecting() {
             "Refreshing"
-        } else if state.rendering {
+        } else if state.rendering() {
             "Rendering"
         } else if !watching {
             "Snapshot"
@@ -328,42 +332,42 @@ fn draw(
         } else {
             "Watching"
         };
-        let filter = if state.filter.is_empty() {
+        let filter = if state.filter().is_empty() {
             String::new()
         } else {
-            format!(" · filter: {}", state.filter)
+            format!(" · filter: {}", state.filter())
         };
-        let search = if state.search.is_empty() {
+        let search = if state.search().is_empty() {
             String::new()
         } else {
             format!(
                 " · /{}: {}{} matches",
-                state.search,
-                state.document.hits.len(),
-                if state.rendering { " (updating)" } else { "" }
+                state.search(),
+                state.document().hits.len(),
+                if state.rendering() { " (updating)" } else { "" }
             )
         };
-        let excluded = if state.document.excluded == 0 {
+        let excluded = if state.document().excluded == 0 {
             String::new()
         } else {
-            format!(" · {} oversized excluded", state.document.excluded)
+            format!(" · {} oversized excluded", state.document().excluded)
         };
         format!(
             " {activity}{filter}{search}{excluded} · {}/{}",
-            state.scroll + 1,
-            state.document.rows.len()
+            state.scroll() + 1,
+            state.document().rows.len()
         )
     };
     frame.render_widget(
-        Paragraph::new(status).style(palette.base().fg(if state.error.is_some() {
+        Paragraph::new(status).style(palette.base().fg(if state.error().is_some() {
             palette.removed_emphasis
         } else {
             palette.muted
         })),
         layout[2],
     );
-    if let Some(prompt) = &state.prompt {
-        let label = if prompt.kind == PromptKind::Filter {
+    if let Some(prompt) = state.prompt() {
+        let label = if prompt.kind() == PromptKind::Filter {
             "Filter › "
         } else {
             "Search › "
@@ -373,10 +377,10 @@ fn draw(
         let suffix = format!("  ({accept}: keep · {cancel}: cancel)");
         let available = layout[3].width.saturating_sub(label.len() as u16 + 1) as usize;
         let mut start = 0;
-        while UnicodeWidthStr::width(&prompt.editor.text[start..prompt.editor.cursor])
+        while UnicodeWidthStr::width(&prompt.editor().text()[start..prompt.editor().cursor()])
             >= available.max(1)
         {
-            start += prompt.editor.text[start..]
+            start += prompt.editor().text()[start..]
                 .chars()
                 .next()
                 .map(char::len_utf8)
@@ -385,7 +389,7 @@ fn draw(
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(label, palette.base().fg(palette.accent)),
-                Span::raw(prompt.editor.text[start..].to_owned()),
+                Span::raw(prompt.editor().text()[start..].to_owned()),
                 Span::styled(suffix, palette.base().fg(palette.muted)),
             ]))
             .style(palette.base()),
@@ -393,7 +397,7 @@ fn draw(
         );
         let x = layout[3].x
             + (UnicodeWidthStr::width(label)
-                + UnicodeWidthStr::width(&prompt.editor.text[start..prompt.editor.cursor]))
+                + UnicodeWidthStr::width(&prompt.editor().text()[start..prompt.editor().cursor()]))
                 as u16;
         frame.set_cursor_position((x.min(area.right().saturating_sub(1)), layout[3].y));
     } else {
@@ -412,7 +416,7 @@ fn draw(
             layout[3],
         );
     }
-    if state.help {
+    if state.help() {
         let width = area.width.saturating_sub(4).min(78);
         let height = area.height.saturating_sub(2);
         let rect = Rect::new(area.x + (area.width - width) / 2, area.y + 1, width, height);

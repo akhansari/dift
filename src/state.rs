@@ -38,58 +38,121 @@ pub enum PromptKind {
 #[derive(Debug, Clone)]
 pub struct Prompt {
     /// Whether the prompt edits the file filter or diff search.
-    pub kind: PromptKind,
+    kind: PromptKind,
     /// Text and cursor being edited.
-    pub editor: Editor,
+    editor: Editor,
     /// Filter or search text from before the prompt opened.
-    pub previous: String,
+    previous: String,
     /// Selected path from before the prompt opened.
-    pub previous_selection: PathBuf,
+    previous_selection: PathBuf,
+}
+
+impl Prompt {
+    pub fn kind(&self) -> PromptKind {
+        self.kind
+    }
+    pub fn editor(&self) -> &Editor {
+        &self.editor
+    }
 }
 
 /// Repository data and interactive state for the terminal UI.
 pub struct State {
     displayed: Displayed,
-    pub help_scroll: usize,
+    help_scroll: usize,
     /// Most recently collected repository changes.
-    pub snapshot: Arc<Snapshot>,
+    snapshot: Arc<Snapshot>,
     /// Selected file or directory; an empty path selects the root.
-    pub selection: PathBuf,
+    selection: PathBuf,
     /// Directories whose children are hidden in the tree.
-    pub collapsed: BTreeSet<PathBuf>,
+    collapsed: BTreeSet<PathBuf>,
     /// Fuzzy query used to filter file paths.
-    pub filter: String,
+    filter: String,
     /// Query used to find matches in the diff.
-    pub search: String,
+    search: String,
     /// Active filter or search prompt, if any.
-    pub prompt: Option<Prompt>,
+    prompt: Option<Prompt>,
     /// Input scope currently receiving keyboard actions.
-    pub focus: Scope,
+    focus: Scope,
     /// Whether the file sidebar is visible.
-    pub sidebar: bool,
+    sidebar: bool,
     /// Whether the diff uses a side-by-side layout.
-    pub split: bool,
+    split: bool,
     /// Whether the help overlay is visible.
-    pub help: bool,
+    help: bool,
     /// Zero-based document row at the top of the diff viewport.
-    pub scroll: usize,
+    scroll: usize,
     /// Rendered diff currently displayed.
-    pub document: Arc<Document>,
+    document: Arc<Document>,
     /// Paths explicitly allowed to load beyond size limits.
-    pub loaded: BTreeSet<PathBuf>,
+    loaded: BTreeSet<PathBuf>,
     /// Latest render request identifier used to reject stale results.
-    pub generation: u64,
+    generation: u64,
     /// Most recent repository collection error, if any.
-    pub error: Option<String>,
+    error: Option<String>,
     /// Whether a repository scan is in progress.
-    pub collecting: bool,
+    collecting: bool,
     /// Whether the latest render request is still in progress.
-    pub rendering: bool,
+    rendering: bool,
     /// Index of the active search hit in the document.
-    pub match_index: Option<usize>,
+    match_index: Option<usize>,
 }
 
 impl State {
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+    pub fn selection(&self) -> &Path {
+        &self.selection
+    }
+    pub fn is_collapsed(&self, path: &Path) -> bool {
+        self.collapsed.contains(path)
+    }
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+    pub fn search(&self) -> &str {
+        &self.search
+    }
+    pub fn prompt(&self) -> Option<&Prompt> {
+        self.prompt.as_ref()
+    }
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+    pub fn loaded(&self) -> &BTreeSet<PathBuf> {
+        &self.loaded
+    }
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    pub fn help_scroll(&self) -> usize {
+        self.help_scroll
+    }
+    pub fn focus(&self) -> Scope {
+        self.focus
+    }
+    pub fn sidebar(&self) -> bool {
+        self.sidebar
+    }
+    pub fn split(&self) -> bool {
+        self.split
+    }
+    pub fn help(&self) -> bool {
+        self.help
+    }
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+    pub fn collecting(&self) -> bool {
+        self.collecting
+    }
+    pub fn rendering(&self) -> bool {
+        self.rendering
+    }
+    pub fn match_index(&self) -> Option<usize> {
+        self.match_index
+    }
     pub fn new(split: bool) -> Self {
         Self {
             displayed: Displayed::default(),
@@ -237,7 +300,7 @@ impl State {
             }
         }
     }
-    pub fn next_file(&mut self, forward: bool) {
+    fn next_file(&mut self, forward: bool) {
         let all = self.tree(true);
         let current = all
             .iter()
@@ -256,7 +319,7 @@ impl State {
             self.scroll = 0;
         }
     }
-    pub fn move_tree(&mut self, forward: bool) {
+    fn move_tree(&mut self, forward: bool) {
         let rows = self.tree(false);
         let index = rows
             .iter()
@@ -272,7 +335,7 @@ impl State {
             self.scroll = 0;
         }
     }
-    pub fn collapse(&mut self) {
+    fn collapse(&mut self) {
         let is_directory = self
             .tree(false)
             .iter()
@@ -283,10 +346,10 @@ impl State {
             self.scroll = 0;
         }
     }
-    pub fn expand(&mut self) {
+    fn expand(&mut self) {
         self.collapsed.remove(&self.selection);
     }
-    pub fn begin_prompt(&mut self, kind: PromptKind) {
+    fn begin_prompt(&mut self, kind: PromptKind) {
         let text = if kind == PromptKind::Filter {
             &self.filter
         } else {
@@ -299,15 +362,15 @@ impl State {
             previous_selection: self.selection.clone(),
         });
     }
-    pub fn sync_prompt(&mut self) -> bool {
+    fn sync_prompt(&mut self) -> bool {
         let mut changed = false;
         if let Some(prompt) = &self.prompt {
             let query = match prompt.kind {
                 PromptKind::Filter => &mut self.filter,
                 PromptKind::Search => &mut self.search,
             };
-            changed = *query != prompt.editor.text;
-            query.clone_from(&prompt.editor.text);
+            changed = query != prompt.editor.text();
+            prompt.editor.text().clone_into(query);
         }
         if !self.selection.as_os_str().is_empty()
             && !self
@@ -320,7 +383,7 @@ impl State {
         }
         changed
     }
-    pub fn finish_prompt(&mut self, accept: bool) -> bool {
+    fn finish_prompt(&mut self, accept: bool) -> bool {
         let mut changed = false;
         if let Some(prompt) = self.prompt.take()
             && !accept
@@ -367,7 +430,7 @@ impl State {
             .saturating_sub(height / 3)
             .min(self.document.rows.len().saturating_sub(height));
     }
-    pub fn input_action(&mut self, action: Action) -> bool {
+    fn input_action(&mut self, action: Action) -> bool {
         if let Some(prompt) = &mut self.prompt {
             prompt.editor.edit(action);
         }
@@ -424,7 +487,7 @@ mod tests {
     fn selecting_a_directory_includes_every_status() {
         // Given
         let mut state = state();
-        state.selection = "src".into();
+        state.action(Action::Down, 10);
         // When
         let selected = state.selected_changes();
         // Then
@@ -434,63 +497,68 @@ mod tests {
     fn next_file_reveals_a_collapsed_path() {
         // Given
         let mut state = state();
-        state.collapsed.insert("src".into());
+        state.action(Action::Down, 10);
+        state.action(Action::Left, 10);
         // When
-        state.next_file(true);
+        state.action(Action::NextFile, 10);
         // Then
-        assert_eq!(state.selection, Path::new("src/a.rs"));
-        assert!(!state.collapsed.contains(Path::new("src")));
+        assert_eq!(state.selection(), Path::new("src/a.rs"));
+        assert!(!state.is_collapsed(Path::new("src")));
     }
     #[test]
     fn cancel_filter_restores_query_and_selection() {
         // Given
         let mut state = state();
-        state.selection = "src/a.rs".into();
-        state.begin_prompt(PromptKind::Filter);
-        state.prompt = Some(Prompt {
-            kind: PromptKind::Filter,
-            editor: Editor::new("tests".into()),
-            previous: String::new(),
-            previous_selection: "src/a.rs".into(),
-        });
-        state.sync_prompt();
+        state.action(Action::NextFile, 10);
+        state.action(Action::Filter, 10);
+        state.paste("tests");
         // When
-        state.finish_prompt(false);
+        state.action(Action::Cancel, 10);
         // Then
-        assert_eq!(state.filter, "");
-        assert_eq!(state.selection, Path::new("src/a.rs"));
+        assert_eq!(state.filter(), "");
+        assert_eq!(state.selection(), Path::new("src/a.rs"));
     }
     #[test]
     fn vanished_file_selects_its_surviving_parent() {
         // Given
-        let mut state = state();
-        state.selection = "src/gone.rs".into();
+        let mut initial = snapshot();
+        initial.changes[0].path = "src/0-gone.rs".into();
+        let mut state = State::new(false);
+        state.update_snapshot(initial);
+        state.action(Action::NextFile, 10);
         // When
         state.update_snapshot(snapshot());
         // Then
-        assert_eq!(state.selection, Path::new("src"));
+        assert_eq!(state.selection(), Path::new("src"));
     }
 
     #[test]
     fn refreshing_keeps_selection_queries_and_collapsed_directories() {
         // Given
         let mut state = state();
-        state.selection = "src/a.rs".into();
-        state.filter = "src".into();
-        state.search = "needle".into();
-        state.collapsed.insert("tests".into());
+        state.action(Action::Last, 10);
+        state.action(Action::Left, 10);
+        state.action(Action::Left, 10);
+        state.action(Action::First, 10);
+        state.action(Action::NextFile, 10);
+        state.action(Action::Filter, 10);
+        state.paste("src");
+        state.action(Action::Accept, 10);
+        state.action(Action::Search, 10);
+        state.paste("needle");
+        state.action(Action::Accept, 10);
         let mut changed = snapshot();
         changed.changes[0].summary = Some("updated content".into());
         // When
         state.update_snapshot(changed);
         // Then
-        assert_eq!(state.selection, Path::new("src/a.rs"));
-        assert_eq!(state.filter, "src");
-        assert_eq!(state.search, "needle");
-        assert!(state.collapsed.contains(Path::new("tests")));
+        assert_eq!(state.selection(), Path::new("src/a.rs"));
+        assert_eq!(state.filter(), "src");
+        assert_eq!(state.search(), "needle");
+        assert!(state.is_collapsed(Path::new("tests")));
         assert_eq!(state.selected_changes(), vec![0, 1]);
         assert_eq!(
-            state.snapshot.changes[0].summary.as_deref(),
+            state.snapshot().changes[0].summary.as_deref(),
             Some("updated content")
         );
     }

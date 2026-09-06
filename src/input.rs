@@ -455,11 +455,19 @@ impl Bindings {
 #[derive(Debug, Clone)]
 pub struct Editor {
     /// Current prompt text.
-    pub text: String,
+    text: String,
     /// Cursor byte offset at a UTF-8 character boundary.
-    pub cursor: usize,
+    cursor: usize,
 }
 impl Editor {
+    /// Current prompt text, borrowed without allowing independent mutation.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    /// Cursor byte offset, always at a UTF-8 character boundary.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
     pub fn new(text: String) -> Self {
         let cursor = text.len();
         Self { text, cursor }
@@ -521,8 +529,55 @@ mod tests {
         // When
         editor.edit(Action::Backspace);
         // Then
-        assert_eq!(editor.text, "été");
-        assert_eq!(editor.cursor, 5);
+        assert_eq!(editor.text(), "été");
+        assert_eq!(editor.cursor(), 5);
+    }
+
+    #[test]
+    fn moving_left_crosses_an_entire_multibyte_character() {
+        // Given
+        let mut editor = Editor::new("é界".into());
+        // When
+        editor.edit(Action::CursorLeft);
+        // Then
+        assert_eq!(editor.text(), "é界");
+        assert_eq!(editor.cursor(), 2);
+    }
+
+    #[test]
+    fn inserting_unicode_at_the_cursor_preserves_the_surrounding_text() {
+        // Given
+        let mut editor = Editor::new("é界".into());
+        editor.edit(Action::CursorLeft);
+        // When
+        editor.insert("🙂");
+        // Then
+        assert_eq!(editor.text(), "é🙂界");
+        assert_eq!(editor.cursor(), 6);
+    }
+
+    #[test]
+    fn delete_removes_the_whole_character_after_the_cursor() {
+        // Given
+        let mut editor = Editor::new("é🙂界".into());
+        editor.edit(Action::CursorHome);
+        editor.edit(Action::CursorRight);
+        // When
+        editor.edit(Action::Delete);
+        // Then
+        assert_eq!(editor.text(), "é界");
+        assert_eq!(editor.cursor(), 2);
+    }
+
+    #[test]
+    fn deleting_a_unicode_word_keeps_the_cursor_at_the_previous_word() {
+        // Given
+        let mut editor = Editor::new("été 界🙂".into());
+        // When
+        editor.edit(Action::DeleteWord);
+        // Then
+        assert_eq!(editor.text(), "été ");
+        assert_eq!(editor.cursor(), 6);
     }
     #[test]
     fn query_input_keeps_normal_quit_key_available_as_text() {
