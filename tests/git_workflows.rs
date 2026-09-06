@@ -1,6 +1,6 @@
 use dift::{
     AppResult,
-    git::{Collector, Limits, Mode, Repository},
+    git::{Collector, GitError, Limits, Mode, Repository},
     model::{Category, LineKind},
 };
 use std::{
@@ -311,6 +311,8 @@ fn deleting_a_tracked_file_preserves_the_old_source() -> AppResult<()> {
     // Then
     assert_eq!(snapshot.changes[0].status, 'D');
     assert!(snapshot.changes[0].old_source.is_some());
+    assert!(snapshot.changes[0].new_source.is_none());
+    assert!(snapshot.changes[0].summary.is_none());
     assert!(
         snapshot.changes[0].hunks[0]
             .lines
@@ -690,5 +692,191 @@ fn non_utf8_paths_keep_their_identity() -> AppResult<()> {
     // Then
     assert_eq!(snapshot.changes[0].path, Path::new(name));
     assert_eq!(snapshot.changes[0].new_source.as_deref(), Some("visible\n"));
+    Ok(())
+}
+
+#[test]
+fn tracked_deletion_applies_the_byte_limit_to_the_old_source() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fs::remove_file(fixture.path.join("src/main.rs"))?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(
+        &Mode::Watch,
+        Limits {
+            bytes: 1,
+            lines: 100,
+        },
+        &BTreeSet::new(),
+    )?;
+    // Then
+    assert!(snapshot.changes[0].oversized);
+    assert!(snapshot.changes[0].hunks.is_empty());
+    assert!(snapshot.changes[0].old_source.is_none());
+    assert!(snapshot.changes[0].new_source.is_none());
+    assert!(
+        snapshot.changes[0]
+            .summary
+            .as_deref()
+            .is_some_and(|summary| {
+                summary.starts_with("Oversized file (") && summary.contains("3 diff lines")
+            })
+    );
+    Ok(())
+}
+
+#[test]
+fn tracked_diff_line_limit_hides_automatically_loaded_content() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", "replacement\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(
+        &Mode::Watch,
+        Limits {
+            bytes: 100,
+            lines: 3,
+        },
+        &BTreeSet::new(),
+    )?;
+    // Then
+    assert!(snapshot.changes[0].oversized);
+    assert!(snapshot.changes[0].hunks.is_empty());
+    assert!(
+        snapshot.changes[0]
+            .summary
+            .as_deref()
+            .is_some_and(|summary| { summary.contains("4 diff lines") })
+    );
+    Ok(())
+}
+
+#[test]
+fn explicitly_loading_a_tracked_file_bypasses_both_limits() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", "replacement\n")?;
+    let repo = fixture.repo()?;
+    let loaded = BTreeSet::from([PathBuf::from("src/main.rs")]);
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits { bytes: 1, lines: 1 }, &loaded)?;
+    // Then
+    assert!(!snapshot.changes[0].oversized);
+    assert!(snapshot.changes[0].summary.is_none());
+    assert_eq!(snapshot.changes[0].hunks[0].lines.len(), 4);
+    assert_eq!(
+        snapshot.changes[0].old_source.as_deref(),
+        Some("fn main() {\n    println!(\"before\");\n}\n")
+    );
+    assert_eq!(
+        snapshot.changes[0].new_source.as_deref(),
+        Some("replacement\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn tracked_binary_changes_keep_a_summary_even_when_explicitly_loaded() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", b"\0binary")?;
+    let repo = fixture.repo()?;
+    let loaded = BTreeSet::from([PathBuf::from("src/main.rs")]);
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &loaded)?;
+    // Then
+    assert_eq!(
+        snapshot.changes[0].summary.as_deref(),
+        Some("Binary file changed")
+    );
+    assert!(snapshot.changes[0].hunks.is_empty());
+    assert!(snapshot.changes[0].old_source.is_none());
+    assert!(snapshot.changes[0].new_source.is_none());
+    Ok(())
+}
+
+#[test]
+fn tracked_non_utf8_text_keeps_the_patch_without_full_source() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", b"after\xff\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert!(snapshot.changes[0].summary.is_none());
+    assert!(snapshot.changes[0].old_source.is_some());
+    assert!(snapshot.changes[0].new_source.is_none());
+    assert_eq!(snapshot.changes[0].hunks[0].lines[3].text, "after\u{fffd}");
+    Ok(())
+}
+
+#[test]
+fn untracked_non_utf8_files_have_an_explanatory_summary() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("file.txt", b"text\xff\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(
+        snapshot.changes[0].summary.as_deref(),
+        Some("Non-UTF-8 file (text preview unavailable)")
+    );
+    assert!(snapshot.changes[0].hunks.is_empty());
+    assert!(snapshot.changes[0].new_source.is_none());
+    Ok(())
+}
+
+#[test]
+fn git_diff_failures_are_reported_as_collection_errors() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    let repo = fixture.repo()?;
+    let mode = Mode::Comparison {
+        base: "missing-revision".into(),
+        head: "HEAD".into(),
+        label: "invalid comparison".into(),
+    };
+    // When
+    let result = repo.snapshot(&mode, Limits::default(), &BTreeSet::new());
+    // Then
+    assert!(
+        matches!(result, Err(GitError::Command(message)) if message.contains("missing-revision"))
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn tracked_symlink_sources_show_the_target_path_without_following_it() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    let link = fixture.path.join("link");
+    std::os::unix::fs::symlink("old-missing-target", &link)?;
+    fixture.git(&["add", "link"])?;
+    fixture.git(&["commit", "-m", "link"])?;
+    fs::remove_file(&link)?;
+    std::os::unix::fs::symlink("new-missing-target", &link)?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(
+        snapshot.changes[0].old_source.as_deref(),
+        Some("old-missing-target")
+    );
+    assert_eq!(
+        snapshot.changes[0].new_source.as_deref(),
+        Some("new-missing-target")
+    );
+    assert_eq!(
+        snapshot.changes[0].hunks[0].lines[1].text,
+        "new-missing-target"
+    );
+    assert!(snapshot.changes[0].summary.is_none());
     Ok(())
 }
