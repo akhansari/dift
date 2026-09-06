@@ -6,6 +6,7 @@ use update::Displayed;
 pub use update::Effects;
 
 use crate::{
+    config::Whitespace,
     input::{Action, Editor, Scope},
     model::Snapshot,
     render::Document,
@@ -18,6 +19,14 @@ use std::{
 };
 
 const FILTER_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Inputs for an explicit collection request; watch refreshes reuse the latest request.
+#[derive(Debug, Default)]
+pub struct CollectionRequest {
+    pub generation: u64,
+    pub loaded: BTreeSet<PathBuf>,
+    pub whitespace: Whitespace,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -77,6 +86,8 @@ pub struct State {
     scroll: usize,
     /// Rendered diff currently displayed.
     document: Arc<Document>,
+    /// Source anchors retained while a new comparison mode awaits its first preview.
+    transition_document: Option<Arc<Document>>,
     /// Paths explicitly allowed to load beyond size limits.
     loaded: BTreeSet<PathBuf>,
     /// Latest render request identifier used to reject stale results.
@@ -87,6 +98,11 @@ pub struct State {
     collecting: bool,
     /// Whether the latest render request is still in progress.
     rendering: bool,
+    /// Latest explicit collection generation and requested whitespace policy.
+    collection_generation: u64,
+    whitespace: Whitespace,
+    ignore_whitespace: Whitespace,
+    visible_files: usize,
     /// Index of the active search hit in the document.
     match_index: Option<usize>,
 }
@@ -147,6 +163,10 @@ impl State {
         self.match_index
     }
     pub fn new(split: bool) -> Self {
+        Self::with_whitespace(split, Whitespace::Exact)
+    }
+
+    pub fn with_whitespace(split: bool, whitespace: Whitespace) -> Self {
         let snapshot = Arc::new(Snapshot::default());
         let collapsed = BTreeSet::new();
         let tree = TreeIndex::new(&snapshot, "", &collapsed);
@@ -166,18 +186,52 @@ impl State {
             help: false,
             scroll: 0,
             document: Arc::new(Document::default()),
+            transition_document: None,
             loaded: BTreeSet::new(),
             generation: 0,
             error: None,
             collecting: false,
             rendering: false,
+            collection_generation: 0,
+            whitespace,
+            ignore_whitespace: if whitespace == Whitespace::Exact {
+                Whitespace::IgnoreChanges
+            } else {
+                whitespace
+            },
+            visible_files: 0,
             match_index: None,
         }
     }
     pub fn update_snapshot(&mut self, snapshot: Snapshot) {
+        self.visible_files = snapshot
+            .changes
+            .iter()
+            .map(|change| &change.path)
+            .collect::<BTreeSet<_>>()
+            .len();
         self.tree = TreeIndex::new(&snapshot, &self.filter, &self.collapsed);
         self.snapshot = Arc::new(snapshot);
         self.reconcile_selection();
+    }
+
+    pub fn visible_files(&self) -> usize {
+        self.visible_files
+    }
+
+    pub fn requested_whitespace(&self) -> Whitespace {
+        self.whitespace
+    }
+
+    pub fn collection_request(&mut self) -> CollectionRequest {
+        self.collection_generation += 1;
+        self.collecting = true;
+        self.error = None;
+        CollectionRequest {
+            generation: self.collection_generation,
+            loaded: self.loaded.clone(),
+            whitespace: self.whitespace,
+        }
     }
     fn reconcile_selection(&mut self) {
         while !self.tree.contains_selection(&self.selection) {
@@ -370,6 +424,8 @@ mod tests {
     fn snapshot_with(files: &[(&str, Category)]) -> Snapshot {
         Snapshot {
             branch: "main".into(),
+            whitespace: Default::default(),
+            whitespace_hidden_files: 0,
             changes: files
                 .iter()
                 .map(|(path, category)| Change {

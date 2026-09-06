@@ -222,6 +222,90 @@ class TerminalSmoke(unittest.TestCase):
             "-c", "core.hooksPath=/nonexistent-dift-hooks", *args
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    def spacing_change(self):
+        (self.root / "spacing.txt").write_text("one two\n")
+        self.git("add", ".")
+        self.git("commit", "-m", "spacing fixture")
+        (self.root / "spacing.txt").write_text("one  two\n")
+        self.session.wait("spacing.txt")
+        self.session.wait("1 files")
+
+    def test_whitespace_toggle_hides_files_and_reports_counts(self):
+        # Given
+        self.spacing_change()
+        config = self.root / ".git/terminal-config.kdl"
+        original = config.read_bytes()
+        # When
+        self.session.send("w")
+        self.session.wait("whitespace: ignore-changes · 0 files · 1 hidden by whitespace")
+        # Then
+        self.assertNotIn("spacing.txt", self.session.screen.text)
+        self.assertEqual(config.read_bytes(), original)
+
+    def test_whitespace_toggle_restores_exact_changes(self):
+        # Given
+        self.spacing_change()
+        self.session.send("w")
+        self.session.wait("whitespace: ignore-changes · 0 files")
+        # When
+        self.session.send("w")
+        self.session.wait("whitespace: exact · 1 files · 0 hidden by whitespace")
+        self.session.wait("spacing.txt")
+        # Then
+        self.assertIn("one  two", self.session.screen.text)
+
+    def test_rapid_whitespace_toggles_apply_the_final_mode(self):
+        # Given
+        self.spacing_change()
+        # When
+        self.session.send("www")
+        self.session.wait("whitespace: ignore-changes · 0 files · 1 hidden by whitespace")
+        # Then
+        self.assertNotIn("spacing.txt", self.session.screen.text)
+
+    def test_watch_reveals_new_content_in_a_whitespace_hidden_file(self):
+        # Given
+        self.spacing_change()
+        self.session.send("w")
+        self.session.wait("whitespace: ignore-changes · 0 files")
+        # When
+        (self.root / "spacing.txt").write_text("SUBSTANTIVE_EDIT\n")
+        self.session.wait("SUBSTANTIVE_EDIT")
+        # Then
+        self.assertIn("whitespace: ignore-changes · 1 files · 0 hidden by whitespace", self.session.screen.text)
+
+    def test_configured_ignore_all_is_used_at_startup(self):
+        # Given
+        self.spacing_change()
+        self.session.stop()
+        (self.root / "spacing.txt").write_text("onetwo\n")
+        config = self.root / ".git/terminal-config.kdl"
+        config.write_text('diff { whitespace "ignore-all"; }\n')
+        # When
+        self.session = Session(self.root, config)
+        self.addCleanup(self.session.close)
+        self.session.wait("whitespace: ignore-all · 0 files · 1 hidden by whitespace")
+        # Then
+        self.assertNotIn("spacing.txt", self.session.screen.text)
+
+    def test_search_typing_w_keeps_exact_comparison(self):
+        # Given
+        self.session.wait("working")
+        # When
+        self.session.send("/w")
+        self.session.wait("Search › w")
+        # Then
+        self.assertIn("whitespace: exact", self.session.screen.text)
+
+    def test_file_counts_are_independent_of_the_file_filter(self):
+        # Given
+        self.session.wait("2 files")
+        # When
+        self.session.send("fnotes\r")
+        self.session.wait("filter: notes")
+        # Then
+        self.assertIn("2 files · 0 hidden by whitespace", self.session.screen.text)
+
     def external_ignore(self, reconcile):
         directory = tempfile.TemporaryDirectory(prefix="dift-external-ignore-")
         self.addCleanup(directory.cleanup)

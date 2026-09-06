@@ -8,6 +8,36 @@ use crate::{
 use kdl::{KdlDocument, KdlNode};
 use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
 
+/// Whitespace policy used by Git when comparing tracked files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Whitespace {
+    /// Show every whitespace edit.
+    #[default]
+    Exact,
+    /// Ignore changes in whitespace amounts and trailing whitespace.
+    IgnoreChanges,
+    /// Also ignore separators being inserted or removed.
+    IgnoreAll,
+}
+
+impl Whitespace {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::IgnoreChanges => "ignore-changes",
+            Self::IgnoreAll => "ignore-all",
+        }
+    }
+
+    pub(crate) fn git_flag(self) -> Option<&'static str> {
+        match self {
+            Self::Exact => None,
+            Self::IgnoreChanges => Some("--ignore-space-change"),
+            Self::IgnoreAll => Some("--ignore-all-space"),
+        }
+    }
+}
+
 /// Granularity of emphasis within changed lines.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Emphasis {
@@ -33,6 +63,8 @@ pub struct Config {
     pub split: bool,
     /// Granularity of emphasis within changed lines in either layout.
     pub emphasis: Emphasis,
+    /// Initial whitespace comparison policy; session toggles do not persist.
+    pub whitespace: Whitespace,
     /// Thresholds for automatically loading file contents.
     pub limits: Limits,
     /// Interval between periodic repository scans in watch mode.
@@ -46,6 +78,7 @@ impl Default for Config {
             theme: "base16-ocean.dark".into(),
             split: false,
             emphasis: Emphasis::default(),
+            whitespace: Whitespace::default(),
             limits: Limits::default(),
             reconcile: Duration::from_secs(30),
         }
@@ -232,6 +265,20 @@ impl Config {
                             .into());
                         }
                     },
+                    "diff" if child_name == "whitespace" => {
+                        config.whitespace = match string_value(child)? {
+                            "exact" => Whitespace::Exact,
+                            "ignore-changes" => Whitespace::IgnoreChanges,
+                            "ignore-all" => Whitespace::IgnoreAll,
+                            _ => {
+                                return Err(ValidationError::ExpectedValue {
+                                    setting: "diff.whitespace".into(),
+                                    expected: "exact, ignore-changes, or ignore-all",
+                                }
+                                .into());
+                            }
+                        };
+                    }
                     "limits" => {
                         match child_name {
                             "max-file-bytes" => config.limits.bytes = number_value(child)?,
@@ -261,7 +308,10 @@ impl Config {
                     }
                 }
             }
-            if !matches!(name, "keybindings" | "appearance" | "limits" | "watch") {
+            if !matches!(
+                name,
+                "keybindings" | "appearance" | "diff" | "limits" | "watch"
+            ) {
                 return Err(ValidationError::Unknown {
                     setting: format!("configuration group {name}"),
                 }
@@ -278,7 +328,7 @@ impl Config {
     pub fn template() -> String {
         let config = Self::default();
         let mut text = String::from(
-            "// dift configuration. Omitted settings retain defaults.\n// Keys are single events: ctrl-q, shift-tab, alt-j, etc.\n// Bindings support do=\"set\" (default), do=\"add\", do=\"remove\".\nappearance {\n    mode \"dark\"\n    theme \"base16-ocean.dark\"\n    layout \"unified\"\n    emphasis \"word\" // word, grapheme, or off\n}\nlimits {\n    max-file-bytes 2097152\n    max-diff-lines 20000\n}\nwatch {\n    reconcile-seconds 30\n}\nkeybindings {\n",
+            "// dift configuration. Omitted settings retain defaults.\n// Keys are single events: ctrl-q, shift-tab, alt-j, etc.\n// Bindings support do=\"set\" (default), do=\"add\", do=\"remove\".\nappearance {\n    mode \"dark\"\n    theme \"base16-ocean.dark\"\n    layout \"unified\"\n    emphasis \"word\" // word, grapheme, or off\n}\ndiff {\n    whitespace \"exact\" // exact, ignore-changes, or ignore-all\n}\nlimits {\n    max-file-bytes 2097152\n    max-diff-lines 20000\n}\nwatch {\n    reconcile-seconds 30\n}\nkeybindings {\n",
         );
         for scope in Scope::ALL {
             text.push_str(&format!("    {} {{\n", scope.name()));

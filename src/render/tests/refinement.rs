@@ -4,6 +4,8 @@ use crate::config::Emphasis;
 fn replacement(old: &[&str], new: &[&str]) -> Snapshot {
     Snapshot {
         branch: "main".into(),
+        whitespace: Default::default(),
+        whitespace_hidden_files: 0,
         changes: vec![Change {
             path: "change.txt".into(),
             old_path: None,

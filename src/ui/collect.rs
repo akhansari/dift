@@ -2,23 +2,22 @@ use super::watch::{Batch, EventFilter, Refresh, Watches};
 use crate::{
     git::{Collector, GitError, Limits, Mode, Repository},
     model::Snapshot,
+    state::CollectionRequest,
 };
 use std::{
-    collections::BTreeSet,
     io,
-    path::PathBuf,
     sync::{Arc, atomic::AtomicBool, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
 pub(super) enum Update {
-    Started,
-    Finished(Result<Snapshot, GitError>),
+    Started(u64),
+    Finished(u64, Result<Snapshot, GitError>),
 }
 
 pub(super) struct Worker {
-    requests: mpsc::Sender<BTreeSet<PathBuf>>,
+    requests: mpsc::Sender<CollectionRequest>,
     pub updates: mpsc::Receiver<Update>,
     pub degraded: Arc<AtomicBool>,
     #[cfg(test)]
@@ -46,7 +45,7 @@ impl Worker {
                 let (mut watches, inbox) = Watches::new(&paths, watcher_degraded, watching);
                 let mut collector = None;
                 let mut filter: Option<EventFilter> = None;
-                let mut loaded = BTreeSet::new();
+                let mut latest = CollectionRequest::default();
                 let mut refresh = Refresh::new(Instant::now());
                 let mut pending = Batch::default();
                 let mut coverage_refresh = false;
@@ -61,7 +60,7 @@ impl Worker {
                     };
                     let mut force = match receive.recv_timeout(timeout) {
                         Ok(request) => {
-                            loaded = request;
+                            latest = request;
                             true
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => false,
@@ -69,7 +68,7 @@ impl Worker {
                     };
                     force |= coverage_changed;
                     for request in receive.try_iter() {
-                        loaded = request;
+                        latest = request;
                         force = true;
                     }
                     let dirty = inbox.drain_into(&mut pending);
@@ -104,11 +103,16 @@ impl Worker {
                         {
                             return Ok(None);
                         }
-                        let _ = send.send(Update::Started);
+                        let _ = send.send(Update::Started(latest.generation));
                         if full {
                             collector.refresh_configuration(true)?;
                         }
-                        let snapshot = collector.snapshot(&mode, limits, &loaded)?;
+                        let snapshot = collector.snapshot_with_whitespace(
+                            &mode,
+                            limits,
+                            &latest.loaded,
+                            latest.whitespace,
+                        )?;
                         let context = collector.watch_context()?;
                         reconcile_watches = watching && (full || batch.changes_directories());
                         filter = Some(EventFilter::new(context));
@@ -123,7 +127,10 @@ impl Worker {
                         }
                     };
                     refresh.completed(Instant::now());
-                    if send.send(Update::Finished(result)).is_err() {
+                    if send
+                        .send(Update::Finished(latest.generation, result))
+                        .is_err()
+                    {
                         break;
                     }
                     if reconcile_watches
@@ -152,9 +159,9 @@ impl Worker {
 
     pub(super) fn request(
         &self,
-        loaded: BTreeSet<PathBuf>,
-    ) -> Result<(), mpsc::SendError<BTreeSet<PathBuf>>> {
-        self.requests.send(loaded)
+        request: CollectionRequest,
+    ) -> Result<(), mpsc::SendError<CollectionRequest>> {
+        self.requests.send(request)
     }
 }
 
@@ -165,7 +172,9 @@ mod tests {
 
     fn next_snapshot(worker: &Worker) -> AppResult<Snapshot> {
         loop {
-            if let Update::Finished(result) = worker.updates.recv_timeout(Duration::from_secs(4))? {
+            if let Update::Finished(_, result) =
+                worker.updates.recv_timeout(Duration::from_secs(4))?
+            {
                 return Ok(result?);
             }
         }
@@ -174,7 +183,7 @@ mod tests {
     fn wait_for_source(worker: &Worker, path: &str, source: &str) -> AppResult<Snapshot> {
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
-            if let Update::Finished(result) = worker
+            if let Update::Finished(_, result) = worker
                 .updates
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))?
             {
@@ -196,10 +205,10 @@ mod tests {
             Limits::default(),
             Duration::from_secs(3600),
         )?;
-        worker.request(BTreeSet::new())?;
+        worker.request(CollectionRequest::default())?;
         worker.initialized.recv_timeout(Duration::from_secs(4))?;
         for update in worker.updates.try_iter() {
-            if let Update::Finished(result) = update {
+            if let Update::Finished(_, result) = update {
                 result?;
             }
         }
@@ -243,7 +252,7 @@ mod tests {
         let fixture = Fixture::new("target/\n")?;
         let worker = watching(&fixture)?;
         // When
-        worker.request(BTreeSet::new())?;
+        worker.request(CollectionRequest::default())?;
         let snapshot = next_snapshot(&worker)?;
         // Then
         assert!(snapshot.changes.is_empty());
@@ -368,7 +377,7 @@ mod tests {
             Limits::default(),
             Duration::from_secs(3600),
         )?;
-        worker.request(BTreeSet::new())?;
+        worker.request(CollectionRequest::default())?;
         let _initial = next_snapshot(&worker)?;
         // When
         fixture.write("src/nested/file.txt", "startup edit\n")?;

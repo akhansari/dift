@@ -185,6 +185,17 @@ impl Repository {
     ) -> Result<Snapshot, GitError> {
         Collector::new(self.clone())?.snapshot(mode, limits, loaded)
     }
+
+    /// Collect with an explicit whitespace comparison policy.
+    pub fn snapshot_with_whitespace(
+        &self,
+        mode: &Mode,
+        limits: Limits,
+        loaded: &BTreeSet<PathBuf>,
+        whitespace: crate::config::Whitespace,
+    ) -> Result<Snapshot, GitError> {
+        Collector::new(self.clone())?.snapshot_with_whitespace(mode, limits, loaded, whitespace)
+    }
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, GitError> {

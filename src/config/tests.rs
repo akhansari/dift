@@ -47,6 +47,103 @@ fn generated_config_restores_working_defaults() -> Result<(), ConfigError> {
     );
     assert_eq!(config.limits.lines, 20_000);
     assert_eq!(config.emphasis, Emphasis::Word);
+    assert_eq!(config.whitespace, Whitespace::Exact);
+    Ok(())
+}
+
+macro_rules! whitespace_config {
+    ($name:ident, $source:expr, $expected:expr) => {
+        #[test]
+        fn $name() -> Result<(), ConfigError> {
+            // Given
+            let source = $source;
+            // When
+            let config = Config::parse(source)?;
+            // Then
+            assert_eq!(config.whitespace, $expected);
+            Ok(())
+        }
+    };
+}
+
+whitespace_config!(omitted_whitespace_is_exact, "", Whitespace::Exact);
+whitespace_config!(
+    exact_whitespace_is_selectable,
+    "diff { whitespace \"exact\"; }",
+    Whitespace::Exact
+);
+whitespace_config!(
+    whitespace_amounts_can_be_ignored,
+    "diff { whitespace \"ignore-changes\"; }",
+    Whitespace::IgnoreChanges
+);
+whitespace_config!(
+    all_whitespace_can_be_ignored,
+    "diff { whitespace \"ignore-all\"; }",
+    Whitespace::IgnoreAll
+);
+
+#[test]
+fn invalid_whitespace_lists_supported_modes() {
+    // Given
+    let source = "diff { whitespace \"trim\"; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(
+        matches!(result, Err(ConfigError::Validation(ValidationError::ExpectedValue { setting, expected: "exact, ignore-changes, or ignore-all" })) if setting == "diff.whitespace")
+    );
+}
+
+#[test]
+fn duplicate_whitespace_is_rejected() {
+    // Given
+    let source = "diff { whitespace \"exact\"; whitespace \"ignore-all\"; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(
+        matches!(result, Err(ConfigError::Validation(ValidationError::Duplicate { setting })) if setting == "diff.whitespace")
+    );
+}
+
+#[test]
+fn whitespace_requires_one_string() {
+    // Given
+    let source = "diff { whitespace 1; }";
+    // When
+    let result = Config::parse(source);
+    // Then
+    assert!(matches!(
+        result,
+        Err(ConfigError::Validation(ValidationError::ExpectedValue {
+            expected: "a string",
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn whitespace_toggle_binding_can_be_replaced() -> Result<(), ConfigError> {
+    // Given
+    let source = "keybindings { global { toggle-whitespace \"alt-w\"; }; }";
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(
+        config.bindings.action(
+            Scope::Tree,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT)
+        ),
+        Some(Action::Whitespace)
+    );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Tree,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE)
+        ),
+        None
+    );
     Ok(())
 }
 

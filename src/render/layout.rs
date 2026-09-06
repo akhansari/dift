@@ -48,6 +48,8 @@ pub fn search_ranges(text: &str, query: &str) -> Vec<Range<usize>> {
 
 struct CellSpec<'a> {
     source: Option<&'a SourceLine>,
+    /// Original side-specific context, which may differ under whitespace filtering.
+    content: Option<(&'a str, bool)>,
     old: bool,
     colors: &'a SyntaxColors,
     emphasis: &'a [Range<usize>],
@@ -58,6 +60,32 @@ struct CellRow {
     anchor: Option<Anchor>,
     hits: usize,
     width: usize,
+}
+
+/// Hunk context visits source lines in order; scan each source at most once.
+struct ContextSource<'a> {
+    lines: std::str::SplitInclusive<'a, char>,
+    number: usize,
+}
+
+impl<'a> ContextSource<'a> {
+    fn new(source: Option<&'a str>) -> Self {
+        Self {
+            lines: source.unwrap_or("").split_inclusive('\n'),
+            number: 0,
+        }
+    }
+
+    fn at(&mut self, number: Option<usize>) -> Option<(&'a str, bool)> {
+        let number = number?;
+        let skip = number.checked_sub(self.number + 1)?;
+        let line = self.lines.nth(skip)?;
+        self.number = number;
+        Some((
+            line.strip_suffix('\n').unwrap_or(line),
+            !line.ends_with('\n'),
+        ))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -74,13 +102,14 @@ fn cells(
     let Some(source) = spec.source else {
         return Ok(Vec::new());
     };
+    let (text, no_newline) = spec.content.unwrap_or((&source.text, source.no_newline));
     let number = if spec.old { source.old } else { source.new }.unwrap_or(0);
     let colors = spec
         .colors
         .get(number.saturating_sub(1))
         .map(|line| line.as_ref())
         .unwrap_or(&[]);
-    let matches = search_ranges(&source.text, spec.query);
+    let matches = search_ranges(text, spec.query);
     let base = palette.line(source.kind);
     let sign = match source.kind {
         LineKind::Added => '+',
@@ -112,7 +141,7 @@ fn cells(
         format!("{sign} ")
     };
     let prefix_width = prefix.len();
-    let source_text: Arc<str> = Arc::from(source.text.as_str());
+    let source_text: Arc<str> = Arc::from(text);
     let make_row = |byte, first| CellRow {
         spans: vec![Span::styled(
             if first {
@@ -136,7 +165,7 @@ fn cells(
     let mut rows = Vec::new();
     let mut row = make_row(0, true);
     let mut logical_column = 0;
-    for (byte, ch) in source.text.char_indices() {
+    for (byte, ch) in text.char_indices() {
         if byte.is_multiple_of(256) {
             cancel.check()?;
         }
@@ -200,7 +229,7 @@ fn cells(
         base,
     ));
     rows.push(row);
-    if source.no_newline {
+    if no_newline {
         rows.extend(
             b"\\ No newline at end of file"
                 .chunks(width)
@@ -238,6 +267,7 @@ fn append_unified(
         path,
         CellSpec {
             source: Some(source),
+            content: None,
             old,
             colors,
             emphasis,
@@ -328,6 +358,8 @@ pub(super) fn file(
     let change = &prepared.change;
     let width = spec.width.max(4);
     let split = spec.split && width >= 32;
+    let mut old_context = ContextSource::new(change.old_source.as_deref());
+    let mut new_context = ContextSource::new(change.new_source.as_deref());
     let query = spec.query;
     let palette = Palette::new(config.light);
     let mut document = Document::default();
@@ -392,6 +424,7 @@ pub(super) fn file(
                         }
                         let left = CellSpec {
                             source: pair.old.map(|i| &hunk.lines[i]),
+                            content: None,
                             old: true,
                             colors: &visuals.old,
                             emphasis: pair
@@ -403,6 +436,7 @@ pub(super) fn file(
                         };
                         let right = CellSpec {
                             source: pair.new.map(|i| &hunk.lines[i]),
+                            content: None,
                             old: false,
                             colors: &visuals.new,
                             emphasis: pair
@@ -460,6 +494,7 @@ pub(super) fn file(
                 if split && source.kind == LineKind::Context {
                     let left = CellSpec {
                         source: Some(source),
+                        content: old_context.at(source.old),
                         old: true,
                         colors: &visuals.old,
                         emphasis: &[],
@@ -467,6 +502,7 @@ pub(super) fn file(
                     };
                     let right = CellSpec {
                         source: Some(source),
+                        content: new_context.at(source.new),
                         old: false,
                         colors: &visuals.new,
                         emphasis: &[],

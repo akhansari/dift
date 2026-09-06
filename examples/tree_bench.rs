@@ -10,6 +10,8 @@ use std::{hint::black_box, time::Instant};
 fn fixture(files: usize, nested: bool) -> Snapshot {
     Snapshot {
         branch: "benchmark".into(),
+        whitespace: Default::default(),
+        whitespace_hidden_files: 0,
         changes: (0..files)
             .map(|i| Change {
                 path: if nested {

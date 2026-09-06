@@ -55,14 +55,13 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     let mut terminal = ratatui::try_init()?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnableBracketedPaste)?;
-    let mut state = State::new(config.split);
+    let mut state = State::with_whitespace(config.split, config.whitespace);
     let mut list_state = ListState::default();
     let mut render_needed = true;
     let mut needs_draw = true;
     let mut last_degraded = degraded.load(Ordering::Relaxed);
     let mut viewport = (0usize, 1usize);
-    state.collection_started();
-    collecting.request(state.loaded().clone())?;
+    collecting.request(state.collection_request())?;
     loop {
         let degraded_now = degraded.load(Ordering::Relaxed);
         needs_draw |= degraded_now != last_degraded;
@@ -70,9 +69,9 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         while let Some(update) = worker_update(collecting.updates.try_recv(), "Git collection")? {
             needs_draw = true;
             match update {
-                collect::Update::Started => state.collection_started(),
-                collect::Update::Finished(result) => {
-                    render_needed |= state.collection_finished(result).render;
+                collect::Update::Started(generation) => state.collection_started(generation),
+                collect::Update::Finished(generation, result) => {
+                    render_needed |= state.collection_finished(generation, result).render;
                 }
             }
         }
@@ -140,7 +139,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
         if effects.collect {
-            collecting.request(state.loaded().clone())?;
+            collecting.request(state.collection_request())?;
         }
     }
     Ok(())
@@ -325,8 +324,27 @@ fn draw(
             &mut scrollbar_state,
         );
     }
+    let pending = if state.requested_whitespace() != state.snapshot().whitespace {
+        format!(
+            " → {} {}",
+            state.requested_whitespace().name(),
+            if state.error().is_some() {
+                "failed"
+            } else {
+                "pending"
+            }
+        )
+    } else {
+        String::new()
+    };
+    let comparison = format!(
+        "whitespace: {}{pending} · {} files · {} hidden by whitespace",
+        state.snapshot().whitespace.name(),
+        state.visible_files(),
+        state.snapshot().whitespace_hidden_files,
+    );
     let status = if let Some(error) = state.error() {
-        format!(" Error: {error}")
+        format!(" {comparison} · Error: {error}")
     } else {
         let activity = if state.collecting() {
             "Refreshing"
@@ -360,7 +378,7 @@ fn draw(
             format!(" · {} oversized excluded", state.document().excluded)
         };
         format!(
-            " {activity}{filter}{search}{excluded} · {}/{}",
+            " {comparison} · {activity}{filter}{search}{excluded} · {}/{}",
             state.scroll() + 1,
             state.document().rows.len()
         )
@@ -410,11 +428,12 @@ fn draw(
     } else {
         let keys = |action| config.bindings.keys(Scope::Global, action);
         let footer = format!(
-            " {} files  {} filter  {} search  {} layout  {} help  {} quit",
+            " {} files  {} filter  {} search  {} layout  {} whitespace  {} help  {} quit",
             format_args!("{}/{}", keys(Action::NextFile), keys(Action::PreviousFile)),
             keys(Action::Filter),
             keys(Action::Search),
             keys(Action::Layout),
+            keys(Action::Whitespace),
             keys(Action::Help),
             keys(Action::Quit)
         );

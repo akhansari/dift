@@ -2,6 +2,25 @@
 
 Git generates patches and determines which lines changed. The renderer uses `similar` 3.2.0 to align those lines for split display and emphasize changes within lines in both layouts. Source text, line numbers, search anchors, and unified patch ordering are preserved.
 
+## Whitespace comparison
+
+`diff { whitespace "exact"; }` is the startup default. `ignore-changes` selects Git's `--ignore-space-change`; `ignore-all` selects `--ignore-all-space`. Filtering happens during collection, before preview or refinement, and applies to unstaged, staged, diff, and review comparisons. Remaining lines use the same alignment and emphasis engine described below. Similar's `WhitespaceMode` is not involved in Git patch generation.
+
+The `toggle-whitespace` action (`w`) switches between exact comparison and the configured ignore mode. When startup configuration is exact, the alternate mode is ignore-changes. Configuration files are never written by this action. Collection requests carry the session mode, explicitly loaded paths, and a generation identifier. Superseded requests are coalesced, stale results are rejected, and collection failures retain the last successful snapshot. There is no time-based fallback to a different whitespace policy.
+
+Ignore modes add one exact names-only Git query per tracked category. Hidden counts are the distinct exact paths absent from all remaining categories. Untracked files and conflicts retain their existing collection paths; metadata and special-file patches follow Git's handling. File loading limits apply after Git has generated the filtered patches, so whitespace-only files can be hidden without reading their full sources into dift.
+
+The status bar always identifies the applied mode and shows visible and whitespace-hidden distinct-path counts, independently of interactive filtering and tree collapse. Pending mode changes are labelled separately. In split view, context lines use the original source for each side when available, since whitespace-equivalent lines may contain different bytes. Unified context retains Git's text. Exact inline refinement remains enabled for lines with substantive edits; whitespace filtering is not language-aware.
+
+Local Linux x86-64 release measurements on 2026-09-06, using `collect_bench` with 300 changed files, 5,000 ignored build files, and ten warm collections per mode:
+
+| Corpus | Exact | Ignore changes | Ignore all |
+| --- | ---: | ---: | ---: |
+| Content edits, 300 visible files | 15.326 ms | 27.935 ms | 24.447 ms |
+| Spacing edits, 300 files hidden in ignore modes | 11.840 ms | 15.323 ms | 14.975 ms |
+
+Values are median collection times, excluding fixture setup and terminal rendering. They include both Git's selected comparison and the extra names-only queries, so they do not isolate query overhead. Runs used separate fixtures and sequential mode order; these are illustrative local measurements, not latency guarantees. Exact mode makes no extra counting query.
+
 ## Alignment
 
 Each contiguous changed block is processed in two stages:

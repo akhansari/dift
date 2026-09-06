@@ -1,9 +1,192 @@
 use super::*;
+use crate::config::Whitespace;
 use crate::{
     model::{Category, Change},
     render::{Anchor, Document, Hit, Row},
 };
 use ratatui::text::Line;
+
+#[test]
+fn whitespace_toggle_requests_ignore_changes_from_the_exact_default() {
+    // Given
+    let mut state = State::new(false);
+    // When
+    let effects = state.handle_key(
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+        &Bindings::defaults(),
+        10,
+        Instant::now(),
+    );
+    // Then
+    assert!(effects.collect);
+    assert!(!effects.render);
+    assert_eq!(state.requested_whitespace(), Whitespace::IgnoreChanges);
+    assert_eq!(state.snapshot().whitespace, Whitespace::Exact);
+}
+
+#[test]
+fn a_configured_ignore_all_mode_can_be_restored_after_exact_comparison() {
+    // Given
+    let mut state = State::with_whitespace(false, Whitespace::IgnoreAll);
+    state.action(Action::Whitespace, 10, Instant::now());
+    // When
+    state.action(Action::Whitespace, 10, Instant::now());
+    // Then
+    assert_eq!(state.requested_whitespace(), Whitespace::IgnoreAll);
+}
+
+#[test]
+fn whitespace_toggle_returns_to_exact_without_changing_the_configured_preference() {
+    // Given
+    let mut state = State::with_whitespace(false, Whitespace::IgnoreAll);
+    // When
+    state.action(Action::Whitespace, 10, Instant::now());
+    // Then
+    assert_eq!(state.requested_whitespace(), Whitespace::Exact);
+}
+
+#[test]
+fn w_is_text_when_a_search_prompt_is_open() {
+    // Given
+    let mut state = State::new(false);
+    state.action(Action::Search, 10, Instant::now());
+    // When
+    let effects = state.handle_key(
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+        &Bindings::defaults(),
+        10,
+        Instant::now(),
+    );
+    // Then
+    assert!(!effects.collect);
+    assert_eq!(state.search(), "w");
+    assert_eq!(state.requested_whitespace(), Whitespace::Exact);
+}
+
+#[test]
+fn rapid_toggling_rejects_even_an_obsolete_result_with_the_same_mode() {
+    // Given
+    let mut state = State::new(false);
+    let obsolete = state.collection_request();
+    state.action(Action::Whitespace, 10, Instant::now());
+    state.collection_request();
+    state.action(Action::Whitespace, 10, Instant::now());
+    state.collection_request();
+    let result = Snapshot {
+        branch: "obsolete".into(),
+        ..Snapshot::default()
+    };
+    // When
+    let effects = state.collection_finished(obsolete.generation, Ok(result));
+    // Then
+    assert!(!effects.redraw);
+    assert!(!effects.render);
+    assert!(state.snapshot().branch.is_empty());
+    assert!(state.collecting());
+}
+
+#[test]
+fn an_obsolete_collection_error_does_not_replace_current_status() {
+    // Given
+    let mut state = State::new(false);
+    let obsolete = state.collection_request();
+    state.collection_request();
+    // When
+    let effects = state.collection_finished(
+        obsolete.generation,
+        Err(GitError::Command("obsolete failure".into())),
+    );
+    // Then
+    assert!(!effects.redraw);
+    assert!(state.error().is_none());
+    assert!(state.collecting());
+}
+
+#[test]
+fn a_failed_toggle_keeps_the_applied_mode_and_hidden_count() {
+    // Given
+    let mut state = State::with_whitespace(false, Whitespace::IgnoreAll);
+    state.update_snapshot(Snapshot {
+        whitespace: Whitespace::IgnoreAll,
+        whitespace_hidden_files: 5,
+        ..Snapshot::default()
+    });
+    state.action(Action::Whitespace, 10, Instant::now());
+    let request = state.collection_request();
+    // When
+    state.collection_finished(
+        request.generation,
+        Err(GitError::Command("cannot compare".into())),
+    );
+    // Then
+    assert_eq!(state.snapshot().whitespace, Whitespace::IgnoreAll);
+    assert_eq!(state.snapshot().whitespace_hidden_files, 5);
+    assert_eq!(state.requested_whitespace(), Whitespace::Exact);
+    assert_eq!(state.error(), Some("cannot compare"));
+}
+
+#[test]
+fn accepting_a_filtered_snapshot_invalidates_previous_renders() {
+    // Given
+    let (mut state, old_render) = reading_state();
+    state.action(Action::Whitespace, 10, Instant::now());
+    let request = state.collection_request();
+    state.collection_finished(
+        request.generation,
+        Ok(Snapshot {
+            whitespace: Whitespace::IgnoreChanges,
+            whitespace_hidden_files: 2,
+            ..Snapshot::default()
+        }),
+    );
+    // When
+    let accepted = state.apply_render(
+        RenderResult {
+            generation: old_render,
+            document: document(&["obsolete"], false),
+            finished: true,
+        },
+        10,
+    );
+    // Then
+    assert!(!accepted);
+    assert_eq!(state.snapshot().whitespace_hidden_files, 2);
+    assert_eq!(state.visible_files(), 0);
+    assert!(state.document().rows.is_empty());
+    assert_eq!(state.selection(), std::path::Path::new(""));
+}
+
+#[test]
+fn switching_whitespace_modes_preserves_scroll_anchors_for_the_first_preview() {
+    // Given
+    let (mut state, _) = reading_state();
+    state.scroll_by(1, true, 1);
+    state.action(Action::Whitespace, 1, Instant::now());
+    let collection = state.collection_request();
+    let snapshot = Snapshot {
+        changes: state.snapshot().changes.clone(),
+        branch: "main".into(),
+        whitespace: Whitespace::IgnoreChanges,
+        whitespace_hidden_files: 0,
+    };
+    state.collection_finished(collection.generation, Ok(snapshot));
+    let request = state.render_request(80, 1);
+    // When
+    state.apply_render(
+        RenderResult {
+            generation: request.generation,
+            document: document(&["inserted", "one", "two", "three"], false),
+            finished: true,
+        },
+        1,
+    );
+    // Then
+    assert_eq!(state.scroll(), 2);
+    assert_eq!(
+        state.document().rows[state.scroll()].line.to_string(),
+        "two"
+    );
+}
 
 fn document(lines: &[&str], partial: bool) -> Arc<Document> {
     Arc::new(Document {
@@ -53,6 +236,8 @@ fn reading_state() -> (State, u64) {
             })
             .collect(),
         branch: "main".into(),
+        whitespace: Default::default(),
+        whitespace_hidden_files: 0,
     });
     state.action(Action::Search, 10, Instant::now());
     state.paste("two", Instant::now());
@@ -256,10 +441,10 @@ fn manual_refresh_requests_collection_without_replacing_the_document() {
 fn a_failed_collection_retains_the_document_and_allows_retry() {
     // Given
     let (mut state, _) = reading_state();
-    state.collection_started();
+    state.collection_started(0);
     // When
     let effects =
-        state.collection_finished(Err(GitError::Command("Cannot read repository".into())));
+        state.collection_finished(0, Err(GitError::Command("Cannot read repository".into())));
     // Then
     assert_eq!(effects, Effects::draw(false));
     assert_eq!(state.error(), Some("Cannot read repository"));

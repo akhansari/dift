@@ -6,6 +6,8 @@ mod refinement;
 fn snapshot() -> Snapshot {
     Snapshot {
         branch: "main".into(),
+        whitespace: Default::default(),
+        whitespace_hidden_files: 0,
         changes: vec![Change {
             path: "main.rs".into(),
             old_path: None,

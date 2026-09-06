@@ -1,5 +1,6 @@
 use super::{PromptKind, State};
 use crate::{
+    config::Whitespace,
     git::GitError,
     input::{Action, Bindings, Scope},
     model::Snapshot,
@@ -61,17 +62,38 @@ impl State {
         Effects::draw(self.apply_prompt())
     }
 
-    pub fn collection_started(&mut self) {
-        self.collecting = true;
+    pub fn collection_started(&mut self, generation: u64) {
+        if generation == self.collection_generation {
+            self.collecting = true;
+        }
     }
 
-    pub fn collection_finished(&mut self, result: Result<Snapshot, GitError>) -> Effects {
+    pub fn collection_finished(
+        &mut self,
+        generation: u64,
+        result: Result<Snapshot, GitError>,
+    ) -> Effects {
+        if generation != self.collection_generation {
+            return Effects::default();
+        }
         self.collecting = false;
         let mut render = false;
         match result {
             Ok(snapshot) => {
                 render = self.snapshot.as_ref() != &snapshot;
                 if render {
+                    if self.snapshot.whitespace != snapshot.whitespace {
+                        // Do not label the old diff with the newly applied mode. Keep
+                        // its anchors until the first matching preview can reanchor.
+                        if self.transition_document.is_none() {
+                            self.transition_document = Some(Arc::clone(&self.document));
+                        }
+                        self.document = Arc::new(crate::render::Document::default());
+                        self.match_index = None;
+                    }
+                    // Prevent a render from the previous snapshot being accepted while
+                    // the terminal loop arranges the new render request.
+                    self.generation += 1;
                     self.update_snapshot(snapshot);
                 }
                 self.error = None;
@@ -113,14 +135,16 @@ impl State {
             return false;
         }
         self.scroll = if self.displayed.selection == self.selection {
-            result
-                .document
-                .reanchored_scroll(&self.document, self.scroll)
+            result.document.reanchored_scroll(
+                self.transition_document.as_ref().unwrap_or(&self.document),
+                self.scroll,
+            )
         } else {
             0
         }
         .min(result.document.rows.len().saturating_sub(height));
         self.document = result.document;
+        self.transition_document = None;
         self.rendering = !result.finished;
         if self.displayed.query != self.search || self.displayed.selection != self.selection {
             self.match_index = None;
@@ -219,6 +243,14 @@ impl State {
             Action::Layout => {
                 self.split = !self.split;
                 effects.render = true;
+            }
+            Action::Whitespace => {
+                self.whitespace = if self.whitespace == Whitespace::Exact {
+                    self.ignore_whitespace
+                } else {
+                    Whitespace::Exact
+                };
+                effects.collect = true;
             }
             Action::Focus if self.sidebar => {
                 self.focus = if self.focus == Scope::Tree {

@@ -1,10 +1,12 @@
 use std::{collections::BTreeSet, ffi::OsString, path::PathBuf, sync::Arc};
 
+use crate::config::Whitespace;
 use crate::model::{Category, Change, Hunk, LineKind, Snapshot, SourceLine};
 
 use super::{
     Collector, GitError, Limits, Mode,
     patch::{RawPatch, parse_raw_patch},
+    path_from_bytes,
     source::{self, Entry, TextSource},
 };
 
@@ -15,18 +17,36 @@ impl Collector {
         limits: Limits,
         loaded: &BTreeSet<PathBuf>,
     ) -> Result<Snapshot, GitError> {
+        self.snapshot_with_whitespace(mode, limits, loaded, Whitespace::Exact)
+    }
+
+    /// Collect Git patches and counts using the selected whitespace policy.
+    pub fn snapshot_with_whitespace(
+        &mut self,
+        mode: &Mode,
+        limits: Limits,
+        loaded: &BTreeSet<PathBuf>,
+        whitespace: Whitespace,
+    ) -> Result<Snapshot, GitError> {
         self.refresh_configuration(false)?;
-        let mut result = Snapshot::default();
+        let mut result = Snapshot {
+            whitespace,
+            ..Snapshot::default()
+        };
+        let mut exact_paths = BTreeSet::new();
         match mode {
             Mode::Comparison { base, head, label } => {
                 result.branch.clone_from(label);
-                result.changes = self.tracked(
+                let (changes, paths) = self.tracked(
                     Category::Comparison,
                     &[base.as_str(), head.as_str()],
                     limits,
                     loaded,
                     &[],
+                    whitespace,
                 )?;
+                result.changes = changes;
+                exact_paths.extend(paths);
             }
             Mode::Watch => {
                 let status = self.status()?;
@@ -48,22 +68,21 @@ impl Collector {
                         loaded,
                     )?);
                 }
-                result.changes.extend(self.tracked(
-                    Category::Unstaged,
-                    &[],
-                    limits,
-                    loaded,
-                    &conflicts,
-                )?);
-                result.changes.extend(self.tracked(
-                    Category::Staged,
-                    &["--cached"],
-                    limits,
-                    loaded,
-                    &conflicts,
-                )?);
+                for (category, extra) in [
+                    (Category::Unstaged, &[][..]),
+                    (Category::Staged, &["--cached"][..]),
+                ] {
+                    let (changes, paths) =
+                        self.tracked(category, extra, limits, loaded, &conflicts, whitespace)?;
+                    result.changes.extend(changes);
+                    exact_paths.extend(paths);
+                }
             }
         }
+        for change in &result.changes {
+            exact_paths.remove(&change.path);
+        }
+        result.whitespace_hidden_files = exact_paths.len();
         result.sort();
         Ok(result)
     }
@@ -75,50 +94,29 @@ impl Collector {
         limits: Limits,
         loaded: &BTreeSet<PathBuf>,
         conflicts: &[PathBuf],
-    ) -> Result<Vec<Change>, GitError> {
-        let mut args: Vec<OsString> = [
-            "-c",
-            "diff.suppressBlankEmpty=false",
-            "diff",
-            "--raw",
-            "-z",
-            "--patch",
-            "--full-index",
-            "--no-abbrev",
-            "--no-color",
-            "--output-indicator-new=+",
-            "--output-indicator-old=-",
-            "--output-indicator-context= ",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-relative",
-            "--find-renames",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "--unified=3",
-            "--submodule=short",
-            "--ignore-submodules=none",
-            "--diff-filter=ACDMRTB",
-        ]
-        .into_iter()
-        .map(OsString::from)
-        .collect();
-        args.extend(extra.iter().map(OsString::from));
-        args.push("--".into());
-        for path in conflicts {
-            let mut exclude = OsString::from(":(top,literal,exclude)");
-            exclude.push(path);
-            args.push(exclude);
-        }
-        let output = self.paths.run(args)?;
-        let records = parse_raw_patch(&output)?;
-        records
+        whitespace: Whitespace,
+    ) -> Result<(Vec<Change>, BTreeSet<PathBuf>), GitError> {
+        let exact_paths = if whitespace == Whitespace::Exact {
+            BTreeSet::new()
+        } else {
+            self.paths
+                .run(diff_args(extra, conflicts, Whitespace::Exact, true))?
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+                .map(path_from_bytes)
+                .collect()
+        };
+        let output = self
+            .paths
+            .run(diff_args(extra, conflicts, whitespace, false))?;
+        let changes = parse_raw_patch(&output)?
             .into_iter()
             .map(|record| {
                 let explicitly_loaded = loaded.contains(&record.path);
                 self.tracked_change(record, category, limits, explicitly_loaded)
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        Ok((changes, exact_paths))
     }
 
     fn tracked_change(
@@ -323,6 +321,57 @@ fn missing_file_summary(conflict: bool) -> &'static str {
     } else {
         "File disappeared during collection; awaiting refresh."
     }
+}
+
+fn diff_args(
+    extra: &[&str],
+    conflicts: &[PathBuf],
+    whitespace: Whitespace,
+    names_only: bool,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "-c",
+        "diff.suppressBlankEmpty=false",
+        "diff",
+        "-z",
+        "--full-index",
+        "--no-abbrev",
+        "--no-color",
+        "--output-indicator-new=+",
+        "--output-indicator-old=-",
+        "--output-indicator-context= ",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-relative",
+        "--find-renames",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--unified=3",
+        "--submodule=short",
+        "--ignore-submodules=none",
+        "--diff-filter=ACDMRTB",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    args.extend(
+        if names_only {
+            &["--name-only"][..]
+        } else {
+            &["--raw", "--patch"][..]
+        }
+        .iter()
+        .map(OsString::from),
+    );
+    args.extend(whitespace.git_flag().map(OsString::from));
+    args.extend(extra.iter().map(OsString::from));
+    args.push("--".into());
+    for path in conflicts {
+        let mut exclude = OsString::from(":(top,literal,exclude)");
+        exclude.push(path);
+        args.push(exclude);
+    }
+    args
 }
 
 #[cfg(test)]

@@ -11,6 +11,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "git_workflows/whitespace.rs"]
+mod whitespace;
+
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 struct Fixture {
     path: PathBuf,

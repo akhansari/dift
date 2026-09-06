@@ -86,6 +86,7 @@ pub enum Action {
     Quit,
     Sidebar,
     Layout,
+    Whitespace,
     Focus,
     NextFile,
     PreviousFile,
@@ -118,10 +119,11 @@ pub enum Action {
     ClearAfter,
 }
 impl Action {
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 34] = [
         Self::Quit,
         Self::Sidebar,
         Self::Layout,
+        Self::Whitespace,
         Self::Focus,
         Self::NextFile,
         Self::PreviousFile,
@@ -158,6 +160,7 @@ impl Action {
             Self::Quit => "quit",
             Self::Sidebar => "toggle-sidebar",
             Self::Layout => "toggle-layout",
+            Self::Whitespace => "toggle-whitespace",
             Self::Focus => "switch-focus",
             Self::NextFile => "next-file",
             Self::PreviousFile => "previous-file",
@@ -335,6 +338,7 @@ impl Bindings {
             (Action::Quit, "q ctrl-c"),
             (Action::Sidebar, "e"),
             (Action::Layout, "s"),
+            (Action::Whitespace, "w"),
             (Action::Focus, "tab shift-tab"),
             (Action::NextFile, "n"),
             (Action::PreviousFile, "p"),

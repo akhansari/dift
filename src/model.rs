@@ -1,3 +1,4 @@
+use crate::config::Whitespace;
 use std::{path::PathBuf, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -81,6 +82,10 @@ pub struct Snapshot {
     pub changes: Vec<Change>,
     /// Branch name or revision comparison label.
     pub branch: String,
+    /// Whitespace policy applied to this snapshot's Git patches.
+    pub whitespace: Whitespace,
+    /// Distinct paths hidden in every category by whitespace comparison.
+    pub whitespace_hidden_files: usize,
 }
 
 impl Snapshot {
