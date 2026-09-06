@@ -9,19 +9,13 @@ use crate::{
     git::{Mode, Repository},
     input::{Action, Scope},
     model::display_path,
-    render::{
-        Palette,
-        worker::{RenderRequest, RenderResult, RenderWorker},
-    },
-    state::{PromptKind, State},
+    render::{Palette, worker::RenderWorker},
+    state::{Effects, PromptKind, State},
 };
 use ratatui::{
     Frame,
     crossterm::{
-        event::{
-            self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
-            KeyModifiers,
-        },
+        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
         execute,
     },
     layout::{Constraint, Layout, Margin, Rect},
@@ -34,57 +28,10 @@ use ratatui::{
 };
 use std::{
     io::{self, IsTerminal},
-    path::PathBuf,
-    sync::{Arc, atomic::Ordering},
+    sync::{atomic::Ordering, mpsc},
     time::Duration,
 };
 use unicode_width::UnicodeWidthStr;
-
-#[derive(Default)]
-struct Displayed {
-    selection: PathBuf,
-    query: String,
-    pending_search_jump: bool,
-}
-
-impl Displayed {
-    fn apply(&mut self, state: &mut State, result: RenderResult, height: usize) -> bool {
-        if result.generation != state.generation
-            || (result.document.partial && self.selection == state.selection && state.scroll > 0)
-        {
-            // Scrolling can happen after requesting a prefix preview. Keep the
-            // current source position until a complete document is available.
-            return false;
-        }
-        state.scroll = if self.selection == state.selection {
-            result
-                .document
-                .reanchored_scroll(&state.document, state.scroll)
-        } else {
-            0
-        }
-        .min(result.document.rows.len().saturating_sub(height));
-        state.document = result.document;
-        state.rendering = !result.finished;
-        if self.query != state.search || self.selection != state.selection {
-            state.match_index = None;
-        } else if let Some(index) = state.match_index {
-            state.match_index = (!state.document.hits.is_empty())
-                .then_some(index.min(state.document.hits.len().saturating_sub(1)));
-        }
-        if self.pending_search_jump && !state.search.is_empty() && !state.document.hits.is_empty() {
-            state.match_index = None;
-            state.jump_match(true, height);
-            self.pending_search_jump = false;
-        }
-        if result.finished || state.search.is_empty() {
-            self.pending_search_jump = false;
-        }
-        self.selection.clone_from(&state.selection);
-        self.query.clone_from(&state.search);
-        true
-    }
-}
 
 struct TerminalGuard;
 impl Drop for TerminalGuard {
@@ -110,37 +57,23 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     execute!(io::stdout(), EnableBracketedPaste)?;
     let mut state = State::new(config.split);
     let mut list_state = ListState::default();
-    let mut help_scroll = 0usize;
     let mut render_needed = true;
     let mut needs_draw = true;
     let mut last_degraded = degraded.load(Ordering::Relaxed);
     let mut viewport = (0usize, 1usize);
-    let mut displayed = Displayed::default();
-    state.collecting = true;
+    state.collection_started();
     collecting.request(state.loaded.clone())?;
     loop {
         let degraded_now = degraded.load(Ordering::Relaxed);
         needs_draw |= degraded_now != last_degraded;
         last_degraded = degraded_now;
-        while let Ok(update) = collecting.updates.try_recv() {
+        while let Some(update) = worker_update(collecting.updates.try_recv(), "Git collection")? {
             needs_draw = true;
-            let result = match update {
-                collect::Update::Started => {
-                    state.collecting = true;
-                    continue;
+            match update {
+                collect::Update::Started => state.collection_started(),
+                collect::Update::Finished(result) => {
+                    render_needed |= state.collection_finished(result).render;
                 }
-                collect::Update::Finished(result) => result,
-            };
-            state.collecting = false;
-            match result {
-                Ok(snapshot) => {
-                    if state.snapshot.as_ref() != &snapshot {
-                        state.update_snapshot(snapshot);
-                        render_needed = true;
-                    }
-                    state.error = None;
-                }
-                Err(error) => state.error = Some(error.to_string()),
             }
         }
         let size = terminal.size()?;
@@ -157,31 +90,12 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
             render_needed = true;
         }
         if render_needed {
-            state.generation += 1;
-            state.rendering = true;
             needs_draw = true;
-            displayed.pending_search_jump |=
-                displayed.query != state.search && !state.search.is_empty();
-            render_worker.request(RenderRequest {
-                generation: state.generation,
-                snapshot: Arc::clone(&state.snapshot),
-                selected: state.selected_changes(),
-                width: viewport.0,
-                split: state.split,
-                query: state.search.clone(),
-                // A prefix-only preview cannot preserve a source anchor farther
-                // down the current document. Reflow/refresh there uses a full
-                // basic diff before replacing the existing view.
-                preview_rows: if displayed.selection == state.selection && state.scroll > 0 {
-                    0
-                } else {
-                    viewport.1.saturating_mul(2).max(16)
-                },
-            })?;
+            render_worker.request(state.render_request(viewport.0, viewport.1))?;
             render_needed = false;
         }
-        while let Ok(result) = render_worker.try_recv() {
-            needs_draw |= displayed.apply(&mut state, result, viewport.1);
+        while let Some(result) = worker_update(render_worker.try_recv(), "Rendering")? {
+            needs_draw |= state.apply_render(result, viewport.1);
         }
         if needs_draw {
             terminal.draw(|frame| {
@@ -193,7 +107,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                     watching,
                     degraded.load(Ordering::Relaxed),
                     &mut list_state,
-                    help_scroll,
+                    state.help_scroll,
                 )
             })?;
             needs_draw = false;
@@ -201,181 +115,38 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         if !event::poll(Duration::from_millis(33))? {
             continue;
         }
-        match event::read()? {
-            Event::Resize(_, _) => {
-                render_needed = true;
-                needs_draw = true;
-            }
-            Event::Paste(text) => {
-                if let Some(prompt) = &mut state.prompt {
-                    needs_draw = true;
-                    prompt.editor.insert(&text);
-                    state.sync_prompt();
-                    render_needed = true;
-                }
-            }
+        let effects = match event::read()? {
+            Event::Resize(_, _) => Effects {
+                redraw: true,
+                render: true,
+                ..Effects::default()
+            },
+            Event::Paste(text) => state.paste(&text),
             Event::Key(key) if key.kind != KeyEventKind::Release => {
-                let scope = if state.prompt.is_some() {
-                    Scope::Input
-                } else {
-                    state.focus
-                };
-                let action = config.bindings.action(scope, key);
-                if action == Some(Action::Quit) {
-                    break;
-                }
-                if state.prompt.is_some() {
-                    needs_draw = true;
-                    let before = (
-                        state.filter.clone(),
-                        state.search.clone(),
-                        state.selection.clone(),
-                    );
-                    match action {
-                        Some(Action::Accept) => state.finish_prompt(true),
-                        Some(Action::Cancel) => state.finish_prompt(false),
-                        Some(action) => state.input_action(action),
-                        None if !key
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                        {
-                            if let KeyCode::Char(ch) = key.code {
-                                if let Some(prompt) = &mut state.prompt {
-                                    prompt.editor.insert(&ch.to_string());
-                                }
-                                state.sync_prompt();
-                            }
-                        }
-                        _ => {}
-                    }
-                    render_needed |= before
-                        != (
-                            state.filter.clone(),
-                            state.search.clone(),
-                            state.selection.clone(),
-                        );
-                    continue;
-                }
-                needs_draw |= action.is_some();
-                if state.help {
-                    match action {
-                        Some(Action::Cancel | Action::Help) => state.help = false,
-                        Some(Action::Down) => help_scroll += 1,
-                        Some(Action::Up) => help_scroll = help_scroll.saturating_sub(1),
-                        Some(Action::PageDown) => help_scroll += viewport.1 / 2,
-                        Some(Action::PageUp) => {
-                            help_scroll = help_scroll.saturating_sub(viewport.1 / 2)
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-                let selection_before = state.selection.clone();
-                match action {
-                    Some(Action::Sidebar) => {
-                        state.sidebar = !state.sidebar;
-                        state.focus = if state.sidebar {
-                            Scope::Tree
-                        } else {
-                            Scope::Diff
-                        };
-                        render_needed = true;
-                    }
-                    Some(Action::Layout) => {
-                        state.split = !state.split;
-                        render_needed = true;
-                    }
-                    Some(Action::Focus) => {
-                        if state.sidebar {
-                            state.focus = if state.focus == Scope::Tree {
-                                Scope::Diff
-                            } else {
-                                Scope::Tree
-                            };
-                        }
-                    }
-                    Some(Action::NextFile) => state.next_file(true),
-                    Some(Action::PreviousFile) => state.next_file(false),
-                    Some(Action::Down) => {
-                        if state.focus == Scope::Tree {
-                            state.move_tree(true);
-                        } else {
-                            state.scroll_by(1, true, viewport.1);
-                        }
-                    }
-                    Some(Action::Up) => {
-                        if state.focus == Scope::Tree {
-                            state.move_tree(false);
-                        } else {
-                            state.scroll_by(1, false, viewport.1);
-                        }
-                    }
-                    Some(Action::Left) => state.collapse(),
-                    Some(Action::Right) => state.expand(),
-                    Some(Action::HalfDown) => {
-                        state.scroll_by((viewport.1 / 2).max(1), true, viewport.1)
-                    }
-                    Some(Action::HalfUp) => {
-                        state.scroll_by((viewport.1 / 2).max(1), false, viewport.1)
-                    }
-                    Some(Action::PageDown) => state.scroll_by(viewport.1, true, viewport.1),
-                    Some(Action::PageUp) => state.scroll_by(viewport.1, false, viewport.1),
-                    Some(Action::First) => {
-                        if state.focus == Scope::Tree {
-                            state.selection.clear();
-                        } else {
-                            state.scroll = 0;
-                        }
-                    }
-                    Some(Action::Last) => {
-                        if state.focus == Scope::Tree {
-                            if let Some(row) = state.tree(false).last() {
-                                state.selection.clone_from(&row.path);
-                            }
-                        } else {
-                            state.scroll = state.document.rows.len().saturating_sub(viewport.1);
-                        }
-                    }
-                    Some(Action::Filter) => state.begin_prompt(PromptKind::Filter),
-                    Some(Action::Search) => state.begin_prompt(PromptKind::Search),
-                    Some(Action::NextMatch) => state.jump_match(true, viewport.1),
-                    Some(Action::PreviousMatch) => state.jump_match(false, viewport.1),
-                    Some(Action::Cancel) => {
-                        if !state.search.is_empty() {
-                            state.search.clear();
-                        } else {
-                            state.filter.clear();
-                        }
-                        render_needed = true;
-                    }
-                    Some(Action::Accept) => {
-                        if state
-                            .snapshot
-                            .changes
-                            .iter()
-                            .any(|c| c.path == state.selection && c.oversized)
-                        {
-                            state.loaded.insert(state.selection.clone());
-                            collecting.request(state.loaded.clone())?;
-                        } else {
-                            state.expand();
-                        }
-                    }
-                    Some(Action::Refresh) => collecting.request(state.loaded.clone())?,
-                    Some(Action::Help) => {
-                        state.help = true;
-                        help_scroll = 0;
-                    }
-                    _ => {}
-                }
-                if state.selection != selection_before {
-                    render_needed = true;
-                }
+                state.handle_key(key, &config.bindings, viewport.1)
             }
-            _ => {}
+            _ => Effects::default(),
+        };
+        if effects.quit {
+            break;
+        }
+        needs_draw |= effects.redraw;
+        render_needed |= effects.render;
+        if effects.collect {
+            collecting.request(state.loaded.clone())?;
         }
     }
     Ok(())
+}
+
+fn worker_update<T>(result: Result<T, mpsc::TryRecvError>, worker: &str) -> io::Result<Option<T>> {
+    match result {
+        Ok(update) => Ok(Some(update)),
+        Err(mpsc::TryRecvError::Empty) => Ok(None),
+        Err(mpsc::TryRecvError::Disconnected) => {
+            Err(io::Error::other(format!("{worker} worker disconnected")))
+        }
+    }
 }
 
 fn panes(body: Rect, sidebar: bool) -> (Rect, Rect) {

@@ -1,3 +1,7 @@
+mod update;
+use update::Displayed;
+pub use update::Effects;
+
 use crate::{
     input::{Action, Editor, Scope},
     model::{Category, Snapshot, display_path},
@@ -45,6 +49,8 @@ pub struct Prompt {
 
 /// Repository data and interactive state for the terminal UI.
 pub struct State {
+    displayed: Displayed,
+    pub help_scroll: usize,
     /// Most recently collected repository changes.
     pub snapshot: Arc<Snapshot>,
     /// Selected file or directory; an empty path selects the root.
@@ -86,6 +92,8 @@ pub struct State {
 impl State {
     pub fn new(split: bool) -> Self {
         Self {
+            displayed: Displayed::default(),
+            help_scroll: 0,
             snapshot: Arc::new(Snapshot::default()),
             selection: PathBuf::new(),
             collapsed: BTreeSet::new(),
@@ -291,34 +299,45 @@ impl State {
             previous_selection: self.selection.clone(),
         });
     }
-    pub fn sync_prompt(&mut self) {
+    pub fn sync_prompt(&mut self) -> bool {
+        let mut changed = false;
         if let Some(prompt) = &self.prompt {
-            if prompt.kind == PromptKind::Filter {
-                self.filter.clone_from(&prompt.editor.text);
-            } else {
-                self.search.clone_from(&prompt.editor.text);
-            }
+            let query = match prompt.kind {
+                PromptKind::Filter => &mut self.filter,
+                PromptKind::Search => &mut self.search,
+            };
+            changed = *query != prompt.editor.text;
+            query.clone_from(&prompt.editor.text);
         }
-        if !self
-            .matching_paths()
-            .iter()
-            .any(|p| p == &self.selection || p.starts_with(&self.selection))
+        if !self.selection.as_os_str().is_empty()
+            && !self
+                .matching_paths()
+                .iter()
+                .any(|p| p == &self.selection || p.starts_with(&self.selection))
         {
             self.selection.clear();
+            changed = true;
         }
+        changed
     }
-    pub fn finish_prompt(&mut self, accept: bool) {
+    pub fn finish_prompt(&mut self, accept: bool) -> bool {
+        let mut changed = false;
         if let Some(prompt) = self.prompt.take()
             && !accept
         {
             if prompt.kind == PromptKind::Filter {
+                changed =
+                    self.filter != prompt.previous || self.selection != prompt.previous_selection;
                 self.filter = prompt.previous;
                 self.selection = prompt.previous_selection;
             } else {
+                changed = self.search != prompt.previous;
                 self.search = prompt.previous;
             }
         }
+        let selection = self.selection.clone();
         self.reconcile_selection();
+        changed || self.selection != selection
     }
     pub fn scroll_by(&mut self, amount: usize, down: bool, height: usize) {
         self.scroll = if down {
@@ -348,11 +367,11 @@ impl State {
             .saturating_sub(height / 3)
             .min(self.document.rows.len().saturating_sub(height));
     }
-    pub fn input_action(&mut self, action: Action) {
+    pub fn input_action(&mut self, action: Action) -> bool {
         if let Some(prompt) = &mut self.prompt {
             prompt.editor.edit(action);
         }
-        self.sync_prompt();
+        self.sync_prompt()
     }
 }
 
