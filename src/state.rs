@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const FILTER_DEBOUNCE: Duration = Duration::from_millis(150);
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
@@ -503,7 +503,7 @@ mod tests {
         state.action(Action::Filter, 10, now);
         state.paste("tests", now);
         // When
-        state.apply_pending_filter(now + Duration::from_millis(150));
+        state.apply_pending_filter(now + Duration::from_millis(300));
         // Then
         assert_eq!(
             paths(&state),
@@ -653,7 +653,7 @@ mod tests {
         state.action(Action::Filter, 10, now);
         state.paste("missing-file", now);
         // When
-        state.apply_pending_filter(now + Duration::from_millis(150));
+        state.apply_pending_filter(now + Duration::from_millis(300));
         // Then
         assert_eq!(paths(&state), [Path::new("")]);
         assert_eq!(state.selection(), Path::new(""));
