@@ -24,10 +24,13 @@ use ratatui::{
         },
         execute,
     },
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
 };
 use std::{
     io::{self, IsTerminal},
@@ -517,6 +520,29 @@ fn draw(
         .map(|r| r.line.clone())
         .collect();
     frame.render_widget(Paragraph::new(rows).style(palette.base()), inner);
+    let max_scroll = state
+        .document
+        .rows
+        .len()
+        .saturating_sub(inner.height as usize);
+    if !inner.is_empty() && max_scroll > 0 {
+        // Ratatui counts scroll positions, including the last full viewport.
+        let mut scrollbar_state = ScrollbarState::new(max_scroll + 1)
+            .position(state.scroll)
+            .viewport_content_length(inner.height as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(palette.base().fg(palette.muted))
+                .thumb_style(palette.base().fg(palette.accent)),
+            diff_area.inner(Margin {
+                horizontal: 0,
+                vertical: 1,
+            }),
+            &mut scrollbar_state,
+        );
+    }
     let status = if let Some(error) = &state.error {
         format!(" Error: {error}")
     } else {
