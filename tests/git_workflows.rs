@@ -1,6 +1,6 @@
 use dift::{
     AppResult,
-    git::{Limits, Mode, Repository},
+    git::{Collector, Limits, Mode, Repository},
     model::{Category, LineKind},
 };
 use std::{
@@ -502,5 +502,193 @@ fn untracked_symlink_is_summarized_without_reading_its_target() -> AppResult<()>
         Some("Symbolic link → missing-target")
     );
     assert!(snapshot.changes[0].hunks.is_empty());
+    Ok(())
+}
+
+fn warmed_collector(fixture: &Fixture) -> AppResult<Collector> {
+    let mut collector = Collector::new(fixture.repo()?)?;
+    collector.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    Ok(collector)
+}
+
+#[test]
+fn persistent_collector_reads_content_changes_with_the_same_status() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", "first edit\n")?;
+    let mut collector = warmed_collector(&fixture)?;
+    fixture.write("src/main.rs", "later edit\n")?;
+    // When
+    let snapshot = collector.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(
+        snapshot.changes[0].new_source.as_deref(),
+        Some("later edit\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn persistent_collector_observes_index_replacement_with_unchanged_mtime() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    let mut collector = warmed_collector(&fixture)?;
+    let index = fixture.path.join(".git/index");
+    let modified = fs::metadata(&index)?.modified()?;
+    fixture.write("src/main.rs", "staged replacement\n")?;
+    fixture.git(&["add", "."])?;
+    fs::File::options()
+        .write(true)
+        .open(&index)?
+        .set_times(fs::FileTimes::new().set_modified(modified))?;
+    // When
+    let snapshot = collector.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(snapshot.changes[0].category, Category::Staged);
+    assert_eq!(
+        snapshot.changes[0].new_source.as_deref(),
+        Some("staged replacement\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn persistent_collector_reloads_exclusion_configuration() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("untracked.txt", "visible\n")?;
+    fixture.write(".git/external-ignore", "untracked.txt\n")?;
+    let mut collector = warmed_collector(&fixture)?;
+    fixture.git(&["config", "core.excludesFile", ".git/external-ignore"])?;
+    // When
+    let snapshot = collector.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert!(snapshot.changes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn sparse_index_preserves_changes_inside_the_worktree() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("other/file.txt", "outside sparse tree\n")?;
+    fixture.git(&["add", "."])?;
+    fixture.git(&["commit", "-m", "other tree"])?;
+    fixture.git(&["sparse-checkout", "set", "--cone", "--sparse-index", "src"])?;
+    fixture.write("src/main.rs", "sparse edit\n")?;
+    // When
+    let snapshot = fixture
+        .repo()?
+        .snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(
+        snapshot.changes[0].new_source.as_deref(),
+        Some("sparse edit\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn split_index_preserves_staged_and_untracked_changes() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.git(&["update-index", "--split-index"])?;
+    fixture.write("src/main.rs", "split edit\n")?;
+    fixture.git(&["add", "."])?;
+    fixture.write("new.txt", "untracked\n")?;
+    // When
+    let snapshot = fixture
+        .repo()?
+        .snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 2);
+    assert_eq!(snapshot.changes[1].category, Category::Staged);
+    assert_eq!(
+        snapshot.changes[1].new_source.as_deref(),
+        Some("split edit\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn packed_objects_remain_readable_after_an_external_commit() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    let mut collector = warmed_collector(&fixture)?;
+    fixture.write("src/main.rs", "new committed source\n")?;
+    fixture.git(&["commit", "-am", "replace"])?;
+    fixture.git(&["gc", "--prune=now"])?;
+    fixture.write("src/main.rs", "working source\n")?;
+    // When
+    let snapshot = collector.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(
+        snapshot.changes[0].old_source.as_deref(),
+        Some("new committed source\n")
+    );
+    assert_eq!(
+        snapshot.changes[0].new_source.as_deref(),
+        Some("working source\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn collecting_preserves_repository_index_and_configuration() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", "changed\n")?;
+    let index = fs::read(fixture.path.join(".git/index"))?;
+    let config = fs::read(fixture.path.join(".git/config"))?;
+    // When
+    fixture
+        .repo()?
+        .snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(fs::read(fixture.path.join(".git/index"))?, index);
+    assert_eq!(fs::read(fixture.path.join(".git/config"))?, config);
+    Ok(())
+}
+
+#[test]
+fn deleting_a_tracked_gitignore_reveals_previously_ignored_files() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write(".gitignore", "hidden.txt\n")?;
+    fixture.git(&["add", ".gitignore"])?;
+    fixture.git(&["commit", "-m", "ignore"])?;
+    fixture.write("hidden.txt", "revealed\n")?;
+    let mut collector = warmed_collector(&fixture)?;
+    fs::remove_file(fixture.path.join(".gitignore"))?;
+    // When
+    let snapshot = collector.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert!(
+        snapshot
+            .changes
+            .iter()
+            .any(|change| change.path == Path::new("hidden.txt")
+                && change.category == Category::Untracked)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_paths_keep_their_identity() -> AppResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+    // Given
+    let fixture = Fixture::committed()?;
+    let name = std::ffi::OsStr::from_bytes(b"non-utf8-\xff.txt");
+    fs::write(fixture.path.join(name), "visible\n")?;
+    // When
+    let snapshot = fixture
+        .repo()?
+        .snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes[0].path, Path::new(name));
+    assert_eq!(snapshot.changes[0].new_source.as_deref(), Some("visible\n"));
     Ok(())
 }

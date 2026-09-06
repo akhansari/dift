@@ -9,21 +9,49 @@ use std::{
 
 use crate::model::{Category, Change, Hunk, LineKind, Snapshot, SourceLine};
 
+mod collector;
+pub use collector::Collector;
+pub(crate) use collector::WatchContext;
+
 #[derive(Debug)]
 pub enum GitError {
     Io(std::io::Error),
     Command(String),
     InvalidOutput(String),
+    Access {
+        operation: &'static str,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 impl fmt::Display for GitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Access { operation, source } => write!(f, "{operation}: {source}"),
             Self::Io(e) => write!(f, "Git I/O: {e}"),
             Self::Command(s) | Self::InvalidOutput(s) => f.write_str(s),
         }
     }
 }
-impl std::error::Error for GitError {}
+impl std::error::Error for GitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Access { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+impl GitError {
+    fn access(
+        operation: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Access {
+            operation,
+            source: Box::new(source),
+        }
+    }
+}
 impl From<std::io::Error> for GitError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -80,27 +108,15 @@ fn successful(output: Output) -> Result<Vec<u8>, GitError> {
 
 impl Repository {
     pub fn discover(cwd: &Path) -> Result<Self, GitError> {
-        let root = successful(
-            Command::new("git")
-                .env("LC_ALL", "C")
-                .args(["--no-optional-locks", "-C"])
-                .arg(cwd)
-                .args(["rev-parse", "--show-toplevel"])
-                .output()?,
-        )?;
-        let root = path_from_bytes(trim_line(&root));
-        let mut repo = Self {
-            root,
-            git_dir: PathBuf::new(),
-            common_dir: PathBuf::new(),
-        };
-        repo.git_dir = path_from_bytes(trim_line(&repo.run(["rev-parse", "--absolute-git-dir"])?));
-        repo.common_dir = path_from_bytes(trim_line(&repo.run([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ])?));
-        Ok(repo)
+        let repo = gix::discover(cwd).map_err(|e| GitError::access("Discover repository", e))?;
+        let root = repo
+            .workdir()
+            .ok_or_else(|| GitError::InvalidOutput("A working tree is required".into()))?;
+        Ok(Self {
+            root: absolute(root)?,
+            git_dir: absolute(repo.git_dir())?,
+            common_dir: absolute(repo.common_dir())?,
+        })
     }
 
     pub fn run<I, S>(&self, args: I) -> Result<Vec<u8>, GitError>
@@ -119,21 +135,15 @@ impl Repository {
     }
 
     pub fn resolve(&self, revision: &str) -> Result<String, GitError> {
-        let spec = format!("{revision}^{{commit}}");
-        Ok(String::from_utf8_lossy(trim_line(&self.run([
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &spec,
-        ])?))
-        .into_owned())
+        Collector::new(self.clone())?.resolve(revision)
     }
 
     pub fn comparison(&self, base: &str, head: &str, review: bool) -> Result<Mode, GitError> {
-        let a = self.resolve(base)?;
-        let b = self.resolve(head)?;
+        let collector = Collector::new(self.clone())?;
+        let a = collector.resolve(base)?;
+        let b = collector.resolve(head)?;
         let resolved_base = if review {
-            String::from_utf8_lossy(trim_line(&self.run(["merge-base", &a, &b])?)).into_owned()
+            collector.merge_base(&a, &b)?
         } else {
             a
         };
@@ -144,12 +154,25 @@ impl Repository {
         })
     }
 
+    /// Collect once. Interactive callers should reuse a `Collector` instead.
     pub fn snapshot(
         &self,
         mode: &Mode,
         limits: Limits,
         loaded: &BTreeSet<PathBuf>,
     ) -> Result<Snapshot, GitError> {
+        Collector::new(self.clone())?.snapshot(mode, limits, loaded)
+    }
+}
+
+impl Collector {
+    pub fn snapshot(
+        &mut self,
+        mode: &Mode,
+        limits: Limits,
+        loaded: &BTreeSet<PathBuf>,
+    ) -> Result<Snapshot, GitError> {
+        self.refresh_configuration(false)?;
         let mut result = Snapshot::default();
         match mode {
             Mode::Comparison { base, head, label } => {
@@ -163,43 +186,24 @@ impl Repository {
                 )?;
             }
             Mode::Watch => {
-                let status = self.run([
-                    "status",
-                    "--porcelain=v2",
-                    "-z",
-                    "--branch",
-                    "--no-ahead-behind",
-                    "--untracked-files=all",
-                    "--ignore-submodules=none",
-                ])?;
-                let mut conflicts = Vec::new();
-                let mut records = status.split(|b| *b == 0);
-                while let Some(record) = records.next() {
-                    if record.starts_with(b"# branch.head ") {
-                        result.branch = String::from_utf8_lossy(&record[14..]).into_owned();
-                    }
-                    if record.starts_with(b"? ") {
-                        result.changes.push(self.worktree_file(
-                            path_from_bytes(&record[2..]),
-                            Category::Untracked,
-                            limits,
-                            loaded,
-                        )?);
-                    }
-                    if record.starts_with(b"u ")
-                        && let Some(path) = record.splitn(11, |b| *b == b' ').nth(10)
-                    {
-                        conflicts.push(path_from_bytes(path));
-                        result.changes.push(self.worktree_file(
-                            path_from_bytes(path),
-                            Category::Unstaged,
-                            limits,
-                            loaded,
-                        )?);
-                    }
-                    if record.starts_with(b"2 ") {
-                        records.next();
-                    }
+                let status = self.status()?;
+                result.branch = status.branch;
+                let conflicts = status.conflicts;
+                for path in status.untracked {
+                    result.changes.push(self.worktree_file(
+                        path,
+                        Category::Untracked,
+                        limits,
+                        loaded,
+                    )?);
+                }
+                for path in &conflicts {
+                    result.changes.push(self.worktree_file(
+                        path.clone(),
+                        Category::Unstaged,
+                        limits,
+                        loaded,
+                    )?);
                 }
                 result.changes.extend(self.tracked(
                     Category::Unstaged,
@@ -263,20 +267,20 @@ impl Repository {
             exclude.push(path);
             args.push(exclude);
         }
-        let output = self.run(args)?;
+        let output = self.paths.run(args)?;
         let records = parse_raw_patch(&output)?;
         records.into_iter().map(|record| {
             let (hunks, metadata) = parse_patch(&record.patch);
-            let old_size = self.object_size(&record.old_oid);
-            let new_size = if category == Category::Unstaged { fs::symlink_metadata(self.root.join(&record.path)).map(|m| m.len()).unwrap_or(0) } else { self.object_size(&record.new_oid) };
+            let submodule = record.old_mode == "160000" || record.new_mode == "160000";
+            let old_size = if submodule { 0 } else { self.object_size(&record.old_oid)? };
+            let new_size = if submodule { 0 } else if category == Category::Unstaged { fs::symlink_metadata(self.paths.root.join(&record.path)).map(|m| m.len()).unwrap_or(0) } else { self.object_size(&record.new_oid)? };
             let oversized = !loaded.contains(&record.path) && (old_size.max(new_size) > limits.bytes || hunks.iter().map(|h| h.lines.len()).sum::<usize>() > limits.lines);
             let binary = record.patch.lines().take_while(|line| !line.starts_with("@@ ")).any(|line| line.starts_with("Binary files ") || line == "GIT binary patch");
-            let submodule = record.old_mode == "160000" || record.new_mode == "160000";
             let text_allowed = !oversized && !binary && !submodule;
-            let old_source = if text_allowed { self.object_text(&record.old_oid) } else { None };
+            let old_source = if text_allowed { self.object_text(&record.old_oid)? } else { None };
             let new_source = if text_allowed && category == Category::Unstaged {
-                read_regular_text(&self.root.join(&record.path))
-            } else if text_allowed { self.object_text(&record.new_oid) } else { None };
+                read_regular_text(&self.paths.root.join(&record.path))
+            } else if text_allowed { self.object_text(&record.new_oid)? } else { None };
             let summary = if oversized { Some(format!("Oversized file ({} bytes, {} diff lines). Select this file to load its contents.", old_size.max(new_size), hunks.iter().map(|h| h.lines.len()).sum::<usize>())) }
                 else if binary { Some("Binary file changed".into()) }
                 else if submodule { Some(format!("Submodule change\n{}", record.patch.lines().filter(|l| l.contains("Subproject commit")).collect::<Vec<_>>().join("\n"))) }
@@ -286,24 +290,6 @@ impl Repository {
         }).collect()
     }
 
-    fn object_size(&self, oid: &str) -> u64 {
-        if oid.bytes().all(|b| b == b'0') {
-            return 0;
-        }
-        self.run(["cat-file", "-s", oid])
-            .ok()
-            .and_then(|b| String::from_utf8_lossy(&b).trim().parse().ok())
-            .unwrap_or(0)
-    }
-
-    fn object_text(&self, oid: &str) -> Option<Arc<str>> {
-        if oid.bytes().all(|b| b == b'0') {
-            return Some(Arc::from(""));
-        }
-        let bytes = self.run(["cat-file", "blob", oid]).ok()?;
-        String::from_utf8(bytes).ok().map(Arc::from)
-    }
-
     fn worktree_file(
         &self,
         path: PathBuf,
@@ -311,7 +297,7 @@ impl Repository {
         limits: Limits,
         loaded: &BTreeSet<PathBuf>,
     ) -> Result<Change, GitError> {
-        let full = self.root.join(&path);
+        let full = self.paths.root.join(&path);
         let conflict = category == Category::Unstaged;
         let mut change = Change {
             path: path.clone(),
@@ -411,12 +397,8 @@ fn read_regular_text(path: &Path) -> Option<Arc<str>> {
         None
     }
 }
-fn trim_line(bytes: &[u8]) -> &[u8] {
-    bytes
-        .strip_suffix(b"\n")
-        .unwrap_or(bytes)
-        .strip_suffix(b"\r")
-        .unwrap_or(bytes.strip_suffix(b"\n").unwrap_or(bytes))
+fn absolute(path: &Path) -> Result<PathBuf, GitError> {
+    gix::path::realpath(path).map_err(|error| GitError::access("Resolve repository path", error))
 }
 #[cfg(unix)]
 fn path_from_bytes(bytes: &[u8]) -> PathBuf {

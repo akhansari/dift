@@ -400,7 +400,7 @@ class TerminalSmoke(unittest.TestCase):
                               "updated ignore rules", timeout=4)
         self.assertNotIn("notes.txt  ?", self.session.screen.text)
 
-    def test_manual_refresh_detects_a_change_outside_the_watched_roots(self):
+    def test_manual_refresh_detects_an_external_ignore_change(self):
         # Given
         ignore = self.external_ignore(reconcile=3600)
         ignore.write_text("")
@@ -410,14 +410,42 @@ class TerminalSmoke(unittest.TestCase):
         self.session.wait("EXTERNAL_CHANGE", timeout=4)
         self.assertIn("external.txt  ?", self.session.screen.text)
 
-    def test_periodic_scan_detects_a_change_outside_the_watched_roots(self):
+    def test_periodic_scan_recovers_an_undelivered_content_change(self):
         # Given
-        ignore = self.external_ignore(reconcile=1)
+        target = self.root / "notes.txt"
+        self.restart_session(reconcile=1)
+        # mmap writes can remain invisible to native watchers until close-write.
+        with target.open("r+b") as handle, mmap.mmap(handle.fileno(), 0) as mapped:
+            # When
+            mapped[:] = b"PERIODIC_EDIT!\n"
+            mapped.flush()
+            # Then
+            self.session.wait("PERIODIC_EDIT!", timeout=4)
+            self.assertIn("notes.txt  ?", self.session.screen.text)
+
+    def test_external_ignore_replacement_refreshes_without_periodic_scan(self):
+        # Given
+        ignore = self.external_ignore(reconcile=3600)
+        replacement = ignore.with_name("replacement")
+        replacement.write_text("")
         # When
-        ignore.write_text("")
+        replacement.replace(ignore)
         # Then
         self.session.wait("EXTERNAL_CHANGE", timeout=4)
         self.assertIn("external.txt  ?", self.session.screen.text)
+
+    def test_nested_ignore_negation_updates_both_panes(self):
+        # Given
+        (self.root / ".gitignore").write_text("*.log\n")
+        nested = self.root / "nested"
+        nested.mkdir()
+        (nested / "keep.log").write_text("NESTED_REVEALED\n")
+        self.restart_session()
+        # When
+        (nested / ".gitignore").write_text("!keep.log\n")
+        # Then
+        self.session.wait("NESTED_REVEALED", timeout=4)
+        self.assertIn("keep.log  ?", self.session.screen.text)
 
     def test_linked_worktree_observes_its_external_index(self):
         # Given

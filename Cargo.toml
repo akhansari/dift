@@ -6,6 +6,8 @@ rust-version = "1.91"
 description = "A keyboard-centric, live Git diff viewer"
 
 [dependencies]
+gix = { version = "0.87.1", default-features = false, features = ["status", "revision", "revparse-regex", "sha1", "sha256"] }
+ignore = "0.4.33"
 kdl = "6.7.1"
 ratatui = "0.30.2"
 usage-rs = "6.6.1"

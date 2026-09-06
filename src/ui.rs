@@ -1,3 +1,6 @@
+mod collect;
+#[cfg(test)]
+mod fixtures;
 mod watch;
 
 use crate::{
@@ -27,19 +30,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 use std::{
-    collections::BTreeSet,
     io::{self, IsTerminal},
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    thread,
-    time::{Duration, Instant},
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
 };
 use unicode_width::UnicodeWidthStr;
-use watch::Refresh;
 
 #[derive(Default)]
 struct Displayed {
@@ -102,60 +98,37 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         .into());
     }
     let render_worker = RenderWorker::spawn(config.clone())?;
-    let (collect_tx, collect_rx) = mpsc::channel::<BTreeSet<PathBuf>>();
-    let (collect_done_tx, collect_done_rx) = mpsc::channel();
-    let worker_repo = repo.clone();
-    let worker_mode = mode.clone();
-    let limits = config.limits;
-    thread::Builder::new()
-        .name("git-collect".into())
-        .spawn(move || {
-            while let Ok(mut loaded) = collect_rx.recv() {
-                while let Ok(newer) = collect_rx.try_recv() {
-                    loaded = newer;
-                }
-                let snapshot = worker_repo.snapshot(&worker_mode, limits, &loaded);
-                if collect_done_tx.send(snapshot).is_err() {
-                    break;
-                }
-            }
-        })?;
-    let dirty = Arc::new(AtomicBool::new(false));
-    let degraded = Arc::new(AtomicBool::new(false));
     let watching = matches!(mode, Mode::Watch);
-    let _watcher = if watching {
-        watch::setup(&repo, Arc::clone(&dirty), Arc::clone(&degraded))
-    } else {
-        None
-    };
+    let collecting =
+        collect::Worker::spawn(repo.clone(), mode.clone(), config.limits, config.reconcile)?;
+    let degraded = &collecting.degraded;
     let mut terminal = ratatui::try_init()?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnableBracketedPaste)?;
     let mut state = State::new(config.split);
     let mut list_state = ListState::default();
     let mut help_scroll = 0usize;
-    let mut refresh = Refresh::new(Instant::now());
     let mut render_needed = true;
     let mut needs_draw = true;
     let mut last_degraded = degraded.load(Ordering::Relaxed);
     let mut viewport = (0usize, 1usize);
     let mut displayed = Displayed::default();
     state.collecting = true;
-    collect_tx.send(state.loaded.clone())?;
+    collecting.request(state.loaded.clone())?;
     loop {
         let degraded_now = degraded.load(Ordering::Relaxed);
         needs_draw |= degraded_now != last_degraded;
         last_degraded = degraded_now;
-        refresh.observe(
-            Instant::now(),
-            dirty.swap(false, Ordering::Relaxed),
-            watching,
-            config.reconcile,
-        );
-        while let Ok(result) = collect_done_rx.try_recv() {
-            state.collecting = false;
+        while let Ok(update) = collecting.updates.try_recv() {
             needs_draw = true;
-            refresh.completed(Instant::now());
+            let result = match update {
+                collect::Update::Started => {
+                    state.collecting = true;
+                    continue;
+                }
+                collect::Update::Finished(result) => result,
+            };
+            state.collecting = false;
             match result {
                 Ok(snapshot) => {
                     if state.snapshot.as_ref() != &snapshot {
@@ -166,11 +139,6 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                 }
                 Err(error) => state.error = Some(error.to_string()),
             }
-        }
-        if refresh.take_request(state.collecting) {
-            collect_tx.send(state.loaded.clone())?;
-            state.collecting = true;
-            needs_draw = true;
         }
         let size = terminal.size()?;
         let (_, diff) = panes(
@@ -385,12 +353,12 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                             .any(|c| c.path == state.selection && c.oversized)
                         {
                             state.loaded.insert(state.selection.clone());
-                            refresh.request();
+                            collecting.request(state.loaded.clone())?;
                         } else {
                             state.expand();
                         }
                     }
-                    Some(Action::Refresh) => refresh.request(),
+                    Some(Action::Refresh) => collecting.request(state.loaded.clone())?,
                     Some(Action::Help) => {
                         state.help = true;
                         help_scroll = 0;
