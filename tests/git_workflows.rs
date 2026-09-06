@@ -1,0 +1,506 @@
+use dift::{
+    AppResult,
+    git::{Limits, Mode, Repository},
+    model::{Category, LineKind},
+};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+struct Fixture {
+    path: PathBuf,
+}
+impl Fixture {
+    fn new() -> AppResult<Self> {
+        let path = std::env::temp_dir().join(format!(
+            "dift-test-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path)?;
+        let fixture = Self { path };
+        fixture.git(&["init", "--initial-branch=main"])?;
+        Ok(fixture)
+    }
+    fn write(&self, path: &str, content: impl AsRef<[u8]>) -> AppResult<()> {
+        let file = self.path.join(path);
+        if let Some(parent) = file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(file, content)?;
+        Ok(())
+    }
+    fn git(&self, args: &[&str]) -> AppResult<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.path)
+            .args([
+                "-c",
+                "user.name=dift Test",
+                "-c",
+                "user.email=tests@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.hooksPath=/nonexistent-dift-hooks",
+            ])
+            .args(args)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Git fixture command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+    fn committed() -> AppResult<Self> {
+        let fixture = Self::new()?;
+        fixture.write("src/main.rs", "fn main() {\n    println!(\"before\");\n}\n")?;
+        fixture.git(&["add", "."])?;
+        fixture.git(&["commit", "-m", "initial"])?;
+        Ok(fixture)
+    }
+    fn repo(&self) -> AppResult<Repository> {
+        Ok(Repository::discover(&self.path)?)
+    }
+    fn conflicted() -> AppResult<Self> {
+        let fixture = Self::committed()?;
+        fixture.git(&["checkout", "-b", "feature"])?;
+        fixture.write("src/main.rs", "feature version\n")?;
+        fixture.git(&["commit", "-am", "feature"])?;
+        fixture.git(&["checkout", "main"])?;
+        fixture.write("src/main.rs", "main version\n")?;
+        fixture.git(&["commit", "-am", "main"])?;
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&fixture.path)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "merge",
+                "feature",
+            ])
+            .output()?;
+        if output.status.code() != Some(1)
+            || !String::from_utf8_lossy(&output.stdout).contains("CONFLICT")
+        {
+            return Err("Expected an unresolved merge in the fixture".into());
+        }
+        Ok(fixture)
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[test]
+fn watch_separates_staged_unstaged_and_untracked_changes() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", "fn main() {\n    println!(\"staged\");\n}\n")?;
+    fixture.git(&["add", "src/main.rs"])?;
+    fixture.write(
+        "src/main.rs",
+        "fn main() {\n    println!(\"working\");\n}\n",
+    )?;
+    fixture.write("new.txt", "untracked\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(
+        snapshot
+            .changes
+            .iter()
+            .map(|c| c.category)
+            .collect::<Vec<_>>(),
+        vec![Category::Unstaged, Category::Untracked, Category::Staged]
+    );
+    assert!(
+        snapshot.changes[0].hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.kind == LineKind::Added && l.text.contains("working"))
+    );
+    assert!(
+        snapshot.changes[2].hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.kind == LineKind::Added && l.text.contains("staged"))
+    );
+    Ok(())
+}
+
+#[test]
+fn repository_without_commits_supports_index_and_untracked_files() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("added.txt", "index\n")?;
+    fixture.git(&["add", "added.txt"])?;
+    fixture.write("other.txt", "untracked\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 2);
+    assert_eq!(snapshot.changes[1].category, Category::Staged);
+    assert_eq!(snapshot.changes[1].hunks[0].lines[0].text, "index");
+    Ok(())
+}
+
+#[test]
+fn staged_rename_retains_both_paths_and_metadata() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.git(&["mv", "src/main.rs", "src/renamed.rs"])?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(snapshot.changes[0].path, Path::new("src/renamed.rs"));
+    assert_eq!(
+        snapshot.changes[0].old_path.as_deref(),
+        Some(Path::new("src/main.rs"))
+    );
+    assert_eq!(snapshot.changes[0].status, 'R');
+    Ok(())
+}
+
+#[test]
+fn subdirectory_launch_discovers_the_whole_repository() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("outside.txt", "outside\n")?;
+    // When
+    let repo = Repository::discover(&fixture.path.join("src"))?;
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(repo.root.canonicalize()?, fixture.path.canonicalize()?);
+    assert_eq!(snapshot.changes[0].path, Path::new("outside.txt"));
+    Ok(())
+}
+
+#[test]
+fn binary_file_is_summarized_without_text_hunks() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("image.bin", b"\0\x01\x02")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes[0].summary.as_deref(), Some("Binary file"));
+    assert!(snapshot.changes[0].hunks.is_empty());
+    Ok(())
+}
+
+#[test]
+fn oversized_file_stays_a_summary_until_loaded() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("large.txt", "one\ntwo\nthree\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(
+        &Mode::Watch,
+        Limits { bytes: 4, lines: 2 },
+        &BTreeSet::new(),
+    )?;
+    // Then
+    assert!(snapshot.changes[0].oversized);
+    assert!(snapshot.changes[0].hunks.is_empty());
+    Ok(())
+}
+
+#[test]
+fn explicit_load_displays_all_oversized_content() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("large.txt", "one\ntwo\nthree\n")?;
+    let loaded = BTreeSet::from([PathBuf::from("large.txt")]);
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits { bytes: 4, lines: 2 }, &loaded)?;
+    // Then
+    assert!(!snapshot.changes[0].oversized);
+    assert_eq!(snapshot.changes[0].hunks[0].lines.len(), 3);
+    Ok(())
+}
+
+#[test]
+fn comparison_is_fixed_even_when_a_branch_moves() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write("src/main.rs", "second\n")?;
+    fixture.git(&["commit", "-am", "second"])?;
+    let repo = fixture.repo()?;
+    let comparison = repo.comparison("HEAD~1", "HEAD", false)?;
+    fixture.write("src/main.rs", "third\n")?;
+    fixture.git(&["commit", "-am", "third"])?;
+    // When
+    let snapshot = repo.snapshot(&comparison, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes[0].new_source.as_deref(), Some("second\n"));
+    assert_eq!(snapshot.changes[0].category, Category::Comparison);
+    Ok(())
+}
+
+#[test]
+fn review_excludes_changes_unique_to_the_base_branch() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.git(&["checkout", "-b", "feature"])?;
+    fixture.write("feature.txt", "feature\n")?;
+    fixture.git(&["add", "."])?;
+    fixture.git(&["commit", "-m", "feature"])?;
+    fixture.git(&["checkout", "main"])?;
+    fixture.write("base.txt", "base\n")?;
+    fixture.git(&["add", "."])?;
+    fixture.git(&["commit", "-m", "base"])?;
+    let repo = fixture.repo()?;
+    let comparison = repo.comparison("main", "feature", true)?;
+    // When
+    let snapshot = repo.snapshot(&comparison, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(snapshot.changes[0].path, Path::new("feature.txt"));
+    Ok(())
+}
+
+#[test]
+fn paths_with_spaces_and_quotes_keep_their_identity() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("some ' file.txt", "before\n")?;
+    fixture.git(&["add", "."])?;
+    fixture.git(&["commit", "-m", "initial"])?;
+    fixture.write("some ' file.txt", "after\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes[0].path, Path::new("some ' file.txt"));
+    assert_eq!(snapshot.changes[0].new_source.as_deref(), Some("after\n"));
+    Ok(())
+}
+
+#[test]
+fn deleting_a_tracked_file_preserves_the_old_source() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fs::remove_file(fixture.path.join("src/main.rs"))?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes[0].status, 'D');
+    assert!(snapshot.changes[0].old_source.is_some());
+    assert!(
+        snapshot.changes[0].hunks[0]
+            .lines
+            .iter()
+            .all(|l| l.kind == LineKind::Removed)
+    );
+    Ok(())
+}
+
+#[test]
+fn linked_worktree_uses_its_own_index_and_working_directory() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.git(&["worktree", "add", "-b", "linked", "linked"])?;
+    fixture.write("linked/new.txt", "linked\n")?;
+    // When
+    let repo = Repository::discover(&fixture.path.join("linked"))?;
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_ne!(repo.git_dir, repo.common_dir);
+    assert_eq!(snapshot.changes[0].path, Path::new("new.txt"));
+    Ok(())
+}
+
+#[test]
+fn merge_conflicts_have_a_readable_unstaged_view() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::conflicted()?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(snapshot.changes[0].status, 'U');
+    assert_eq!(snapshot.changes[0].category, Category::Unstaged);
+    assert!(
+        snapshot.changes[0].hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.text.starts_with("<<<<<<<"))
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_conflict_file_does_not_hide_other_changes() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::conflicted()?;
+    fs::remove_file(fixture.path.join("src/main.rs"))?;
+    fixture.write("other.txt", "other\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 2);
+    assert_eq!(snapshot.changes[0].status, 'U');
+    assert!(
+        snapshot.changes[0]
+            .summary
+            .as_deref()
+            .is_some_and(|s| s.contains("no working-tree file"))
+    );
+    assert_eq!(snapshot.changes[1].path, Path::new("other.txt"));
+    Ok(())
+}
+
+#[test]
+fn text_mentioning_binary_patch_headers_remains_visible() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write(
+        "src/main.rs",
+        "Binary files are ordinary text here\nGIT binary patch\n",
+    )?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert!(snapshot.changes[0].summary.is_none());
+    assert!(
+        snapshot.changes[0].hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.text == "GIT binary patch")
+    );
+    Ok(())
+}
+
+#[test]
+fn custom_git_output_indicators_do_not_hide_diff_content() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.git(&["config", "diff.outputIndicatorNew", ">"])?;
+    fixture.git(&["config", "diff.outputIndicatorOld", "<"])?;
+    fixture.git(&["config", "diff.suppressBlankEmpty", "true"])?;
+    fixture.write("src/main.rs", "after\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert!(
+        snapshot.changes[0].hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.kind == LineKind::Added && line.text == "after")
+    );
+    Ok(())
+}
+
+#[test]
+fn line_ending_changes_preserve_the_carriage_return_in_removed_text() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("line.txt", "before\r\n")?;
+    fixture.git(&["add", "."])?;
+    fixture.git(&["commit", "-m", "initial"])?;
+    fixture.write("line.txt", "before\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes[0].hunks[0].lines[0].text, "before\r");
+    assert_eq!(snapshot.changes[0].hunks[0].lines[1].text, "before");
+    Ok(())
+}
+
+#[test]
+fn executable_bit_only_change_has_a_readable_summary() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.git(&["config", "core.filemode", "false"])?;
+    fixture.git(&["update-index", "--chmod=+x", "src/main.rs"])?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(snapshot.changes[0].category, Category::Staged);
+    assert!(snapshot.changes[0].hunks.is_empty());
+    assert!(
+        snapshot.changes[0]
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("new mode 100755"))
+    );
+    Ok(())
+}
+
+#[test]
+fn submodule_change_has_a_summary_without_blob_lookup() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    let nested = Fixture::committed()?;
+    fixture.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        &nested.path.to_string_lossy(),
+        "module",
+    ])?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes[1].path, Path::new("module"));
+    assert!(
+        snapshot.changes[1]
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.starts_with("Submodule change"))
+    );
+    assert!(snapshot.changes[1].hunks.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn untracked_symlink_is_summarized_without_reading_its_target() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    std::os::unix::fs::symlink("missing-target", fixture.path.join("link"))?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(
+        snapshot.changes[0].summary.as_deref(),
+        Some("Symbolic link → missing-target")
+    );
+    assert!(snapshot.changes[0].hunks.is_empty());
+    Ok(())
+}

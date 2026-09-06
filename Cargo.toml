@@ -1,0 +1,17 @@
+[package]
+name = "dift"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "A keyboard-centric, live Git diff viewer"
+
+[dependencies]
+kdl = "6.7.1"
+ratatui = "0.30.2"
+usage-rs = "6.6.1"
+notify = "8.2.0"
+nucleo-matcher = "0.3.1"
+unicode-width = "0.2.2"
+similar = { version = "2.7.0", features = ["inline", "unicode"] }
+syntect = { version = "5.3.0", default-features = false, features = ["default-themes", "regex-fancy"] }
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
