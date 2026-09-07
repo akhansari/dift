@@ -352,7 +352,28 @@ impl Config {
     pub fn template() -> String {
         let config = Self::default();
         let mut text = String::from(
-            "// dift configuration. Omitted settings retain defaults.\n// Keys are single events: ctrl-q, shift-tab, alt-j, etc.\n// Bindings support do=\"set\" (default), do=\"add\", do=\"remove\".\nappearance {\n    mode \"dark\"\n    theme \"base16-ocean.dark\"\n    layout \"unified\"\n    emphasis \"word\" // word, grapheme, or off\n    icons \"none\" // none or nerd (requires a Nerd Font)\n}\ndiff {\n    whitespace \"exact\" // exact, ignore-changes, or ignore-all\n}\nlimits {\n    max-file-bytes 2097152\n    max-diff-lines 20000\n}\nwatch {\n    reconcile-seconds 30\n}\nkeybindings {\n",
+            r#"// dift configuration. Omitted settings retain defaults.
+// Keys are single events: ctrl-q, shift-tab, alt-j, etc.
+// Bindings support do="set" (default), do="add", do="remove".
+appearance {
+    mode "dark"
+    theme "base16-ocean.dark"
+    layout "unified"
+    emphasis "word" // word, grapheme, or off
+    icons "none" // none or nerd (requires a Nerd Font)
+}
+diff {
+    whitespace "exact" // exact, ignore-changes, or ignore-all
+}
+limits {
+    max-file-bytes 2097152
+    max-diff-lines 20000
+}
+watch {
+    reconcile-seconds 30
+}
+keybindings {
+"#,
         );
         for scope in Scope::ALL {
             text.push_str(&format!("    {} {{\n", scope.name()));

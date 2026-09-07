@@ -1,5 +1,6 @@
 mod cache;
 mod control;
+mod header;
 mod layout;
 mod prepare;
 mod refine;
@@ -8,7 +9,7 @@ pub mod worker;
 
 use crate::{
     config::Config,
-    model::{Category, Change, LineKind, Snapshot, SourceLine, display_path},
+    model::{Category, Change, LineKind, Snapshot, SourceLine},
 };
 use cache::{Cache, fingerprint};
 pub use control::{Cancellation, Cancelled};
@@ -27,6 +28,9 @@ use std::{
 use syntax::{SyntaxCache, SyntaxColors};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
+pub(crate) const MIN_SPLIT_WIDTH: usize = 32;
+pub(crate) const FILE_HEADER_ROWS: usize = 2;
+
 /// A source position used to preserve scroll location across renders.
 #[derive(Debug, Clone)]
 pub struct Anchor {
@@ -43,6 +47,7 @@ pub struct Anchor {
     /// Full source line text used to locate matching content.
     pub text: Arc<str>,
 }
+
 /// A styled terminal row with its associated source positions.
 #[derive(Debug, Clone)]
 pub struct Row {
@@ -51,17 +56,21 @@ pub struct Row {
     /// Source positions represented by this row.
     pub anchors: Vec<Anchor>,
 }
+
 /// A search match located in a rendered document.
 #[derive(Debug, Clone)]
 pub struct Hit {
     /// Zero-based document row containing the match.
     pub row: usize,
 }
+
 /// Rendered diff rows and metadata used by the UI.
 #[derive(Debug, Default, Clone)]
 pub struct Document {
     /// Terminal rows in display order.
     pub rows: Vec<Arc<Row>>,
+    /// Ordered file sections, starting at each header and excluding category rows.
+    pub file_sections: Vec<Range<usize>>,
     /// Search matches in document order.
     pub hits: Vec<Hit>,
     /// Number of oversized changes whose contents were omitted.
@@ -70,6 +79,16 @@ pub struct Document {
     pub partial: bool,
 }
 impl Document {
+    /// File at the top, or the first file entering the viewport.
+    pub fn current_file_section(&self, scroll: usize, height: usize) -> Option<&Range<usize>> {
+        let index = self
+            .file_sections
+            .partition_point(|section| section.end <= scroll);
+        self.file_sections
+            .get(index)
+            .filter(|section| height > 0 && section.start < scroll.saturating_add(height))
+    }
+
     pub fn reanchored_scroll(&self, previous: &Self, row: usize) -> usize {
         if row == 0 {
             return 0;
@@ -94,6 +113,7 @@ impl Document {
             .find_map(|r| r.anchors.first())
             .cloned()
     }
+
     pub fn locate(&self, anchor: &Anchor) -> Option<usize> {
         self.rows
             .iter()
@@ -130,6 +150,10 @@ pub struct Palette {
     pub muted: Color,
     /// Background color for panels and headers.
     pub panel: Color,
+    /// Readable foreground color for addition labels.
+    pub added_foreground: Color,
+    /// Readable foreground color for deletion labels.
+    pub removed_foreground: Color,
     /// Color for focused elements and highlighted labels.
     pub accent: Color,
     /// Background color for added lines.
@@ -149,6 +173,8 @@ impl Palette {
                 foreground: Color::Rgb(35, 40, 52),
                 muted: Color::Rgb(113, 119, 132),
                 panel: Color::Rgb(236, 239, 244),
+                added_foreground: Color::Rgb(39, 115, 69),
+                removed_foreground: Color::Rgb(166, 46, 62),
                 accent: Color::Rgb(44, 91, 181),
                 added: Color::Rgb(222, 243, 224),
                 removed: Color::Rgb(253, 229, 232),
@@ -161,6 +187,8 @@ impl Palette {
                 foreground: Color::Rgb(211, 217, 228),
                 muted: Color::Rgb(114, 127, 151),
                 panel: Color::Rgb(28, 33, 44),
+                added_foreground: Color::Rgb(124, 181, 141),
+                removed_foreground: Color::Rgb(229, 143, 150),
                 accent: Color::Rgb(131, 180, 255),
                 added: Color::Rgb(24, 48, 39),
                 removed: Color::Rgb(57, 30, 39),
@@ -169,9 +197,11 @@ impl Palette {
             }
         }
     }
+
     pub fn base(self) -> Style {
         Style::default().fg(self.foreground).bg(self.background)
     }
+
     fn line(self, kind: LineKind) -> Style {
         self.base().bg(match kind {
             LineKind::Added => self.added,
@@ -249,6 +279,7 @@ struct Visuals {
     old: SyntaxColors,
     new: SyntaxColors,
 }
+
 struct CachedLayout {
     prepared: Arc<Prepared>,
     width: usize,
@@ -300,6 +331,7 @@ impl Renderer {
             })
         }
     }
+
     pub fn new(config: Config) -> Result<Self, RenderError> {
         Self::validate_theme(&config)?;
         Ok(Self {
@@ -312,6 +344,7 @@ impl Renderer {
             stats: RenderStats::default(),
         })
     }
+
     pub fn stats(&self) -> RenderStats {
         RenderStats {
             syntax_lines: self.syntax.parsed_lines,
@@ -320,6 +353,7 @@ impl Renderer {
             ..self.stats
         }
     }
+
     /// Blocking convenience API for exports, tests and benchmarks. The TUI uses
     /// render_progressive so its first readable frame precedes syntax processing.
     pub fn document(
@@ -348,6 +382,7 @@ impl Renderer {
         )?;
         Ok(latest)
     }
+
     pub fn render_progressive(
         &mut self,
         spec: RenderSpec<'_>,
@@ -361,6 +396,7 @@ impl Renderer {
             .filter_map(|i| spec.snapshot.changes.get(*i))
             .map(|change| (fingerprint(change), change))
             .collect();
+
         // Revisits with unchanged presentation need no preview or syntax pass.
         if let Some(documents) = versions
             .iter()
@@ -378,6 +414,7 @@ impl Renderer {
                 Err(Cancelled)
             };
         }
+
         let mut budget = WorkBudget::new(Duration::from_millis(20));
         let mut prepared = Vec::new();
         for (hash, change) in &versions {
@@ -387,6 +424,7 @@ impl Renderer {
         let mut documents = self.preview_files(&prepared, spec, limit, cancel)?;
         let document = compose(&versions, &documents, self.config.light, limit, cancel)?;
         let partial = document.partial;
+
         cancel.check()?;
         if !publish(RenderUpdate {
             document: Arc::new(document),
@@ -394,6 +432,7 @@ impl Renderer {
         }) {
             return Err(Cancelled);
         }
+
         cancel.check()?;
         if partial {
             documents = self.preview_files(&prepared, spec, None, cancel)?;
@@ -477,6 +516,7 @@ impl Renderer {
             }
         }
         let document = compose(&versions, &documents, self.config.light, None, cancel)?;
+
         cancel.check()?;
         if publish(RenderUpdate {
             document: Arc::new(document),
@@ -487,6 +527,7 @@ impl Renderer {
             Err(Cancelled)
         }
     }
+
     fn prepare(
         &mut self,
         hash: u64,
@@ -521,6 +562,7 @@ impl Renderer {
             .insert(Arc::clone(&prepared), prepared.bytes());
         Ok(prepared)
     }
+
     fn cached_layout(
         &mut self,
         hash: u64,
@@ -542,6 +584,7 @@ impl Renderer {
         self.layouts.insert(entry, bytes);
         Some(document)
     }
+
     fn remember_layout(
         &mut self,
         prepared: Arc<Prepared>,
@@ -560,6 +603,7 @@ impl Renderer {
         let bytes = entry.bytes();
         self.layouts.insert(entry, bytes);
     }
+
     fn preview_files(
         &mut self,
         prepared: &[Arc<Prepared>],
@@ -631,6 +675,9 @@ fn compose(
             limit.saturating_sub(offset).min(file.rows.len())
         });
         result.rows.extend(file.rows.iter().take(count).cloned());
+        if count > 0 {
+            result.file_sections.push(offset..offset + count);
+        }
         result.hits.extend(
             file.hits
                 .iter()
@@ -647,6 +694,15 @@ fn compose(
         }
     }
     result.partial |= files.len() < versions.len();
+    // A trailing file spacer must not become the only body row in a tiny viewport.
+    if result.rows.last().is_some_and(|row| {
+        row.anchors.is_empty() && row.line.spans.iter().all(|span| span.content.is_empty())
+    }) {
+        result.rows.pop();
+        if let Some(section) = result.file_sections.last_mut() {
+            section.end = section.end.min(result.rows.len());
+        }
+    }
     if result.rows.is_empty() {
         layout::push_header(
             &mut result,

@@ -1,4 +1,4 @@
-use super::{PromptKind, State};
+use super::{PromptKind, State, TOAST_DURATION, Toast};
 use crate::{
     config::Whitespace,
     git::GitError,
@@ -39,6 +39,33 @@ pub(super) struct Displayed {
 }
 
 impl State {
+    fn show_toast(&mut self, message: String, now: Instant) {
+        self.toast = Some(Toast {
+            message,
+            expires_at: now + TOAST_DURATION,
+        });
+    }
+
+    pub fn toast_delay(&self, now: Instant) -> Option<Duration> {
+        self.toast
+            .as_ref()
+            .map(|toast| toast.expires_at.saturating_duration_since(now))
+    }
+
+    /// Clear an expired notification without recollecting or rendering the diff.
+    pub fn expire_toast(&mut self, now: Instant) -> Effects {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|toast| now >= toast.expires_at)
+        {
+            self.toast = None;
+            Effects::draw(false)
+        } else {
+            Effects::default()
+        }
+    }
+
     /// Time until a pending filter edit should be applied.
     pub fn filter_delay(&self, now: Instant) -> Option<Duration> {
         self.prompt
@@ -72,6 +99,7 @@ impl State {
         &mut self,
         generation: u64,
         result: Result<Snapshot, GitError>,
+        now: Instant,
     ) -> Effects {
         if generation != self.collection_generation {
             return Effects::default();
@@ -80,6 +108,18 @@ impl State {
         let mut render = false;
         match result {
             Ok(snapshot) => {
+                if self.whitespace_toast_pending && self.snapshot.whitespace != snapshot.whitespace
+                {
+                    self.show_toast(
+                        format!(
+                            "Whitespace: {} · {} hidden by whitespace",
+                            snapshot.whitespace.name(),
+                            snapshot.whitespace_hidden_files,
+                        ),
+                        now,
+                    );
+                }
+                self.whitespace_toast_pending = false;
                 render = self.snapshot.as_ref() != &snapshot;
                 if render {
                     if self.snapshot.whitespace != snapshot.whitespace {
@@ -250,6 +290,7 @@ impl State {
                 } else {
                     Whitespace::Exact
                 };
+                self.whitespace_toast_pending = true;
                 effects.collect = true;
             }
             Action::Focus if self.sidebar => {
@@ -275,7 +316,11 @@ impl State {
                 self.scroll_by((height / 2).max(1), action == Action::HalfDown, height)
             }
             Action::PageDown | Action::PageUp => {
-                self.scroll_by(height, action == Action::PageDown, height)
+                // Leave room for the sticky header on the destination page.
+                let page = height
+                    .saturating_sub(crate::render::FILE_HEADER_ROWS)
+                    .max(1);
+                self.scroll_by(page, action == Action::PageDown, height)
             }
             Action::First => {
                 if self.focus == Scope::Tree {

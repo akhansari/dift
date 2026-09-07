@@ -355,6 +355,7 @@ fn a_refresh_uses_the_applied_filter_and_preserves_the_pending_edit() {
             ("src/new.rs", Category::Untracked),
             ("tests/new.rs", Category::Staged),
         ])),
+        now + Duration::from_millis(400),
     );
     // Then
     assert_eq!(state.filter(), "src");
@@ -384,6 +385,7 @@ fn a_pending_filter_applies_to_the_latest_snapshot() {
             ("src/new.rs", Category::Untracked),
             ("tests/new.rs", Category::Staged),
         ])),
+        now,
     );
     // When
     let effects = state.apply_pending_filter(now + Duration::from_millis(300));
@@ -404,7 +406,11 @@ fn cancellation_reconciles_the_original_selection_with_a_refreshed_snapshot() {
     let mut state = editing_filter(now);
     state.paste("tests", now);
     state.apply_pending_filter(now + Duration::from_millis(300));
-    state.collection_finished(0, Ok(snapshot_with(&[("src/new.rs", Category::Untracked)])));
+    state.collection_finished(
+        0,
+        Ok(snapshot_with(&[("src/new.rs", Category::Untracked)])),
+        now + Duration::from_millis(300),
+    );
     // When
     state.action(Action::Cancel, 10, now + Duration::from_millis(400));
     // Then

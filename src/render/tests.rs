@@ -1,6 +1,7 @@
 use super::*;
 use crate::model::Hunk;
 
+mod headers;
 mod refinement;
 
 fn snapshot() -> Snapshot {
@@ -406,7 +407,9 @@ fn refresh_at_a_file_header_preserves_its_offset_from_source() -> crate::AppResu
     // When
     let scroll = refreshed.reanchored_scroll(&previous, 1);
     // Then
-    assert_eq!(refreshed.rows[scroll].line.to_string(), " M  main.rs");
+    let header = refreshed.rows[scroll].line.to_string();
+    assert!(header.starts_with("  main.rs "));
+    assert!(header.contains("Modified · Unstaged"));
     Ok(())
 }
 

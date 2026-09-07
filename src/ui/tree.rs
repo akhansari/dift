@@ -2,7 +2,8 @@ use crate::{
     config::{Config, Icons},
     input::Scope,
     render::Palette,
-    state::{PromptKind, State, TreeRow},
+    state::{State, TreeRow},
+    text::name_spans,
 };
 use ratatui::{
     Frame,
@@ -16,45 +17,27 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+/// Draw the tree and report whether its shared pane divider is visible.
 pub(super) fn draw(
     frame: &mut Frame,
     state: &State,
     config: &Config,
     area: Rect,
     list_state: &mut ListState,
-) {
+) -> bool {
     let palette = Palette::new(config.light);
     let focused = state.focus() == Scope::Tree;
     let count = state.matching_paths().len();
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused {
-            palette.accent
-        } else {
-            palette.muted
-        }));
-    let mut inner = block.inner(area);
-    frame.render_widget(block, area);
-    let editing = state
-        .prompt()
-        .filter(|prompt| prompt.kind() == PromptKind::Filter);
-    if (!state.filter().is_empty() || editing.is_some()) && inner.height > 1 {
-        let query = editing.map_or(state.filter(), |prompt| prompt.editor().text());
-        let label = format!("Filter: {query}");
-        frame.render_widget(
-            Paragraph::new(Line::from(name_spans(
-                &label,
-                &[],
-                inner.width as usize,
-                Style::default().fg(palette.accent),
-            )))
-            .style(palette.base()),
-            Rect { height: 1, ..inner },
-        );
-        inner.y += 1;
-        inner.height -= 1;
-    }
+        .borders(Borders::RIGHT)
+        .border_style(palette.base().fg(palette.muted));
+    let inner = block.inner(area);
     let rows = state.tree(false);
+    let max_scroll = rows.len().saturating_sub(inner.height as usize);
+    let scrollbar_visible = max_scroll > 0 && !inner.is_empty();
+    if !scrollbar_visible {
+        frame.render_widget(block, area);
+    }
     let selection = rows.iter().position(|row| row.path == state.selection());
     let active_directory = selection.and_then(|index| {
         let row = &rows[index];
@@ -115,8 +98,7 @@ pub(super) fn draw(
             },
         );
     }
-    let max_scroll = rows.len().saturating_sub(inner.height as usize);
-    if max_scroll > 0 && !inner.is_empty() {
+    if scrollbar_visible {
         let mut scroll = ScrollbarState::new(max_scroll + 1)
             .position(list_state.offset())
             .viewport_content_length(inner.height as usize);
@@ -140,6 +122,7 @@ pub(super) fn draw(
             &mut scroll,
         );
     }
+    !scrollbar_visible
 }
 
 fn row_line<'a>(
@@ -257,76 +240,4 @@ fn icon(row: &TreeRow, collapsed: bool) -> &'static str {
         Some("json" | "jsonc" | "toml" | "yaml" | "yml" | "kdl" | "ini" | "conf") => "\u{e615}",
         _ => "\u{f15c}",
     }
-}
-
-/// Fit a name without splitting graphemes, keeping the extension where possible.
-/// Match indices remain relative to the original name after middle truncation.
-fn name_spans<'a>(name: &'a str, matches: &[usize], width: usize, style: Style) -> Vec<Span<'a>> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let source = Span::raw(name);
-    let mut byte = 0;
-    let graphemes: Vec<_> = source
-        .styled_graphemes(Style::default())
-        .enumerate()
-        .map(|(index, grapheme)| {
-            let start = byte;
-            byte += grapheme.symbol.len();
-            (start..byte, index, grapheme.symbol.width())
-        })
-        .collect();
-    let truncated = name.width() > width;
-    let (head, tail) = if truncated {
-        let remaining = width - 1;
-        let extension = name
-            .rfind('.')
-            .filter(|index| *index > 0)
-            .map_or(0, |index| name[index..].width());
-        let tail_budget = (remaining / 2)
-            .max(extension)
-            .min(remaining.saturating_sub(1));
-        let mut tail_width = 0;
-        let tail = graphemes
-            .iter()
-            .rev()
-            .take_while(|(_, _, cells)| {
-                if tail_width + cells > tail_budget {
-                    return false;
-                }
-                tail_width += cells;
-                true
-            })
-            .count();
-        let mut head_width = 0;
-        let head = graphemes
-            .iter()
-            .take_while(|(_, _, cells)| {
-                if head_width + cells > remaining - tail_width {
-                    return false;
-                }
-                head_width += cells;
-                true
-            })
-            .count();
-        (head, graphemes.len() - tail)
-    } else {
-        (graphemes.len(), graphemes.len())
-    };
-    let styled = |(bytes, index, _): &(std::ops::Range<usize>, usize, usize)| {
-        Span::styled(
-            &name[bytes.clone()],
-            if matches.binary_search(index).is_ok() {
-                style.add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
-            } else {
-                style
-            },
-        )
-    };
-    let mut spans: Vec<_> = graphemes[..head].iter().map(styled).collect();
-    if truncated {
-        spans.push(Span::styled("…", style));
-        spans.extend(graphemes[tail..].iter().map(styled));
-    }
-    spans
 }

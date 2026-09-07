@@ -38,7 +38,9 @@ JSON output reports individual runs and medians:
 - `first_frame_ms`: the first visible application frame.
 - `readable_diff_ms`: the first visible source row with a diff line number.
 - `highlighted_ms`: the first visible source row with distinct foreground colors.
-- `complete_ms`: the first completed rendering, showing `Watching` or `Polling`.
+- `complete_ms`: the first visible `Watching` or `Polling` activity label. Activity
+  changes must persist for 500 ms before appearing, so this measurement includes
+  the label delay after rendering completes.
 - `native_watches`: Linux inotify registrations at completion; null elsewhere.
 
 Color detection applies to the fixed default layout and measures visible syntax,

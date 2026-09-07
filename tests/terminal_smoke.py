@@ -25,7 +25,22 @@ BINARY = Path(__file__).resolve().parents[1] / "target/debug/dift"
 
 def has_tree_badge(text, name, badges):
     """Match a tree row independently of the space reserved for its basename."""
-    return re.search(rf"{re.escape(name)} +{re.escape(badges)} [│┃█║]", text) is not None
+    return re.search(rf"{re.escape(name)} +{re.escape(badges)} [ │┃█║]", text) is not None
+
+
+def has_selection(text, name):
+    """Check the focused tree row independently of transient notifications."""
+    rows = text.splitlines()
+    tree_width = min(len(rows[0]) // 3, 34)
+    return any(
+        row.startswith("▎") and re.search(rf"(?:^| ){re.escape(name)} +", row[1:tree_width])
+        for row in rows[:-3]
+    )
+
+
+def has_split_edit(text, before, after):
+    """Find both sides of an edited line on the same terminal row."""
+    return any(before in row and after in row and "│" in row for row in text.splitlines()[:-3])
 
 
 class Screen:
@@ -157,6 +172,10 @@ class Session:
     def wait(self, text, timeout=8):
         self.wait_for(lambda screen: text in screen, repr(text), timeout)
 
+    def wait_selection(self, name, timeout=8):
+        self.wait_for(lambda text: has_selection(text, name),
+                      f"selected {name!r}", timeout)
+
     def wait_for(self, predicate, description, timeout=8):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -174,7 +193,10 @@ class Session:
             self.pump(min(0.05, max(0, deadline - time.monotonic())))
 
     def stop(self):
-        self.send("\x03")
+        # Close an input prompt or help before using the normal quit binding.
+        self.send("\x1b")
+        self.advance(0.05)
+        self.send("q")
         deadline = time.monotonic() + 3
         while self.status is None and time.monotonic() < deadline:
             self.pump()
@@ -235,7 +257,7 @@ class TerminalSmoke(unittest.TestCase):
         self.git("commit", "-m", "spacing fixture")
         (self.root / "spacing.txt").write_text("one  two\n")
         self.session.wait("spacing.txt")
-        self.session.wait("1 files")
+        self.session.wait_for(lambda text: has_tree_badge(text, "All changes", "1"), "one changed file in the tree")
 
     def test_whitespace_toggle_hides_files_and_reports_counts(self):
         # Given
@@ -244,19 +266,21 @@ class TerminalSmoke(unittest.TestCase):
         original = config.read_bytes()
         # When
         self.session.send("w")
-        self.session.wait("whitespace: ignore-changes · 0 files · 1 hidden by whitespace")
+        self.session.wait("Whitespace: ignore-changes · 1 hidden by whitespace")
         # Then
         self.assertNotIn("spacing.txt", self.session.screen.text)
+        self.assertNotIn("files", self.session.screen.text.splitlines()[-2])
+        self.assertNotIn("whitespace", self.session.screen.text.splitlines()[-2])
         self.assertEqual(config.read_bytes(), original)
 
     def test_whitespace_toggle_restores_exact_changes(self):
         # Given
         self.spacing_change()
         self.session.send("w")
-        self.session.wait("whitespace: ignore-changes · 0 files")
+        self.session.wait("Whitespace: ignore-changes · 1 hidden by whitespace")
         # When
         self.session.send("w")
-        self.session.wait("whitespace: exact · 1 files · 0 hidden by whitespace")
+        self.session.wait("Whitespace: exact · 0 hidden by whitespace")
         self.session.wait("spacing.txt")
         # Then
         self.assertIn("one  two", self.session.screen.text)
@@ -266,7 +290,7 @@ class TerminalSmoke(unittest.TestCase):
         self.spacing_change()
         # When
         self.session.send("www")
-        self.session.wait("whitespace: ignore-changes · 0 files · 1 hidden by whitespace")
+        self.session.wait("Whitespace: ignore-changes · 1 hidden by whitespace")
         # Then
         self.assertNotIn("spacing.txt", self.session.screen.text)
 
@@ -274,12 +298,14 @@ class TerminalSmoke(unittest.TestCase):
         # Given
         self.spacing_change()
         self.session.send("w")
-        self.session.wait("whitespace: ignore-changes · 0 files")
+        self.session.wait("Whitespace: ignore-changes · 1 hidden by whitespace")
+        self.session.wait_for(lambda text: "Whitespace:" not in text, "whitespace toast expired", timeout=4)
         # When
         (self.root / "spacing.txt").write_text("SUBSTANTIVE_EDIT\n")
         self.session.wait("SUBSTANTIVE_EDIT")
         # Then
-        self.assertIn("whitespace: ignore-changes · 1 files · 0 hidden by whitespace", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "1"))
+        self.assertNotIn("Whitespace:", self.session.screen.text)
 
     def test_configured_ignore_all_is_used_at_startup(self):
         # Given
@@ -291,27 +317,32 @@ class TerminalSmoke(unittest.TestCase):
         # When
         self.session = Session(self.root, config)
         self.addCleanup(self.session.close)
-        self.session.wait("whitespace: ignore-all · 0 files · 1 hidden by whitespace")
+        self.session.wait("Watching")
         # Then
         self.assertNotIn("spacing.txt", self.session.screen.text)
+        self.assertIn("No changes", self.session.screen.text)
+        self.assertNotIn("Whitespace:", self.session.screen.text)
 
     def test_search_typing_w_keeps_exact_comparison(self):
         # Given
-        self.session.wait("working")
+        self.spacing_change()
         # When
         self.session.send("/w")
         self.session.wait("Search › w")
         # Then
-        self.assertIn("whitespace: exact", self.session.screen.text)
+        self.assertIn("spacing.txt", self.session.screen.text)
+        self.assertIn("one  two", self.session.screen.text)
+        self.assertNotIn("Whitespace:", self.session.screen.text)
 
-    def test_file_counts_are_independent_of_the_file_filter(self):
+    def test_filtered_file_counts_stay_in_the_tree_and_out_of_the_status(self):
         # Given
-        self.session.wait("2 files")
+        self.session.wait_for(lambda text: has_tree_badge(text, "All changes", "2"), "two changed files in the tree")
         # When
         self.session.send("fnotes\r")
         self.session.wait("filter: notes")
         # Then
-        self.assertIn("2 files · 0 hidden by whitespace", self.session.screen.text)
+        self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "1/2"))
+        self.assertNotIn("files", self.session.screen.text.splitlines()[-2])
 
     def external_ignore(self, reconcile):
         directory = tempfile.TemporaryDirectory(prefix="dift-external-ignore-")
@@ -360,12 +391,33 @@ class TerminalSmoke(unittest.TestCase):
 
     def test_file_navigation_skips_directories_and_layout_keeps_headers(self):
         self.session.send("ns")
-        self.session.wait("src/main.rs · Split")
+        self.session.wait_selection("main.rs")
+        self.session.wait_for(lambda text: has_split_edit(text, "staged", "working"), "side-by-side diff content")
         self.assertIn("UNSTAGED", self.session.screen.text)
+        self.assertNotIn("Layout:", self.session.screen.text)
         self.session.send("n")
-        self.session.wait("notes.txt · Split")
+        self.session.wait_selection("notes.txt")
         self.session.send("p")
-        self.session.wait("src/main.rs · Split")
+        self.session.wait_selection("main.rs")
+
+    def test_whitespace_toast_expires_while_idle_and_restores_the_content(self):
+        # Given
+        self.spacing_change()
+        self.session.send("w")
+        self.session.wait("Whitespace: ignore-changes · 1 hidden by whitespace")
+        self.session.send("w")
+        self.session.wait("Whitespace: exact · 0 hidden by whitespace")
+        self.session.wait("one  two")
+        self.session.wait("Watching")
+        # When
+        self.session.wait_for(lambda text: "Whitespace:" not in text, "whitespace toast expired", timeout=4)
+        self.session.advance(0.1)
+        size = len(self.session.raw)
+        self.session.advance(0.2)
+        # Then
+        self.assertIn("one  two", self.session.screen.text)
+        self.assertNotIn("whitespace", self.session.screen.text.splitlines()[-2])
+        self.assertEqual(len(self.session.raw), size)
 
     def test_filter_changes_both_tree_and_aggregate_diff(self):
         self.session.send("fnotes\r")
@@ -378,28 +430,28 @@ class TerminalSmoke(unittest.TestCase):
     def test_tree_guide_follows_the_selected_files_parent(self):
         # Given
         self.session.send("n")
-        self.session.wait("src/main.rs · Unified")
+        self.session.wait_selection("main.rs")
         # When
         self.session.send("n")
-        self.session.wait("notes.txt · Unified")
+        self.session.wait_selection("notes.txt")
         # Then
-        self.assertEqual(self.session.screen.rows[3][2], "│")
-        self.assertEqual(self.session.screen.rows[4][2], "│")
-        self.assertEqual(self.session.screen.rows[4][4], " ")
-        self.assertEqual(self.session.screen.rows[5][2], "│")
+        self.assertEqual(self.session.screen.rows[1][1], "│")
+        self.assertEqual(self.session.screen.rows[2][1], "│")
+        self.assertEqual(self.session.screen.rows[2][3], " ")
+        self.assertEqual(self.session.screen.rows[3][1], "│")
 
     def test_filter_reveals_a_collapsed_folder_and_clearing_restores_it(self):
         # Given
         self.session.send("jhfmain\r")
         self.session.wait_for(lambda text: has_tree_badge(text, "All changes", "1/2"),
                               "filtered count beside All changes")
-        self.session.wait("Filter: main")
+        self.session.wait("filter: main")
         self.session.send("l")
-        self.session.wait("src/main.rs · Unified")
+        self.session.wait_selection("main.rs")
         # When
         self.session.send("\x1b")
         # Then
-        self.session.wait_for(lambda text: "src · Unified" in text and "Filter: main" not in text,
+        self.session.wait_for(lambda text: has_selection(text, "src") and "filter: main" not in text,
                               "restored folder selection")
         self.assertRegex(self.session.screen.text, r"▸ src +1")
         self.assertFalse(has_tree_badge(self.session.screen.text, "main.rs", "US"))
@@ -424,6 +476,7 @@ class TerminalSmoke(unittest.TestCase):
         self.assertEqual(config.read_text(), source)
 
     def test_search_is_literal_and_input_keeps_quit_character(self):
+        self.session.resize(160, 35)
         self.session.send("/working\r")
         self.session.wait("/working: 1 matches")
         self.session.send("/q")
@@ -460,14 +513,14 @@ class TerminalSmoke(unittest.TestCase):
     def test_atomic_save_refreshes_the_selected_file(self):
         # Given
         self.session.send("n")
-        self.session.wait("src/main.rs · Unified")
+        self.session.wait_selection("main.rs")
         temporary = self.root / "src/save.tmp"
         temporary.write_text("ATOMIC_SAVE\n")
         # When
         os.replace(temporary, self.root / "src/main.rs")
         # Then
         self.session.wait("ATOMIC_SAVE", timeout=4)
-        self.assertIn("src/main.rs · Unified", self.session.screen.text)
+        self.assertTrue(has_selection(self.session.screen.text, "main.rs"))
 
     def test_untracked_creation_updates_both_panes(self):
         # Given
@@ -482,11 +535,11 @@ class TerminalSmoke(unittest.TestCase):
     def test_deleting_the_selected_file_returns_to_the_root(self):
         # Given
         self.session.send("nn")
-        self.session.wait("notes.txt · Unified")
+        self.session.wait_selection("notes.txt")
         # When
         (self.root / "notes.txt").unlink()
         # Then
-        self.session.wait_for(lambda text: "Repository · Unified" in text and "notes.txt" not in text,
+        self.session.wait_for(lambda text: has_selection(text, "All changes") and "notes.txt" not in text,
                               "root selection without the deleted file", timeout=4)
         self.assertTrue(has_tree_badge(self.session.screen.text, "All changes", "1"))
         self.assertIn("working", self.session.screen.text)
@@ -497,13 +550,17 @@ class TerminalSmoke(unittest.TestCase):
         # When
         path.unlink()
         # Then
-        self.session.wait(" D  src/main.rs", timeout=4)
+        self.session.wait_for(
+            lambda text: any("src/main.rs" in row and "Deleted" in row for row in text.splitlines()),
+            "deleted file header",
+            timeout=4,
+        )
         self.assertTrue(has_tree_badge(self.session.screen.text, "main.rs", "US"), self.session.screen.text)
 
     def test_staging_updates_badges_and_removes_the_unstaged_section(self):
         # Given
         self.session.send("n")
-        self.session.wait("src/main.rs · Unified")
+        self.session.wait_selection("main.rs")
         # When
         self.git("add", "src/main.rs")
         # Then
@@ -514,7 +571,7 @@ class TerminalSmoke(unittest.TestCase):
     def test_unstaging_updates_badges_and_removes_the_staged_section(self):
         # Given
         self.session.send("n")
-        self.session.wait("src/main.rs · Unified")
+        self.session.wait_selection("main.rs")
         # When
         self.git("restore", "--staged", "src/main.rs")
         # Then
@@ -545,14 +602,19 @@ class TerminalSmoke(unittest.TestCase):
         self.session.wait("src/renamed.rs", timeout=4)
         self.assertFalse(has_tree_badge(self.session.screen.text, "main.rs", "S"), self.session.screen.text)
 
-    def test_branch_switch_refreshes_the_branch_label(self):
+    def test_branch_switch_refreshes_the_diff(self):
         # Given
         branch = "watch-new-branch"
+        # The target branch contains the staged version; working edits remain.
+        tree = self.git("write-tree").stdout.decode().strip()
+        commit = self.git("commit-tree", tree, "-p", "HEAD", "-m", "staged branch").stdout.decode().strip()
+        self.git("branch", branch, commit)
         # When
-        self.git("checkout", "-b", branch)
+        self.git("checkout", branch)
         # Then
-        self.session.wait(branch, timeout=4)
-        self.assertIn("working", self.session.screen.text)
+        self.session.wait_for(lambda text: has_tree_badge(text, "main.rs", "U") and " STAGED " not in text and "working" in text,
+                              "diff against the new branch", timeout=4)
+        self.assertNotIn(branch, self.session.screen.text)
 
     def test_ignore_change_removes_a_file_from_both_panes(self):
         # Given
@@ -628,13 +690,14 @@ class TerminalSmoke(unittest.TestCase):
 
     def test_refresh_preserves_filter_selection_and_updates_search_matches(self):
         # Given
+        self.session.resize(160, 35)
         self.session.send("nfsrc\r/working\r")
         self.session.wait("/working: 1 matches")
         # When
         (self.root / "src/main.rs").write_text("working\nworking again\n")
         # Then
         self.session.wait("/working: 2 matches", timeout=4)
-        self.assertIn("src/main.rs · Unified", self.session.screen.text)
+        self.assertTrue(has_selection(self.session.screen.text, "main.rs"))
         self.assertIn("filter: src", self.session.screen.text)
         self.assertNotIn("notes.txt", self.session.screen.text)
 
@@ -693,7 +756,7 @@ class TerminalSmoke(unittest.TestCase):
 
     def test_resize_and_exit_restore_terminal(self):
         self.session.resize(80, 25)
-        self.session.wait("Repository · Unified")
+        self.session.wait_selection("All changes")
         self.assertEqual(self.session.stop(), 0)
         self.assertEqual(termios.tcgetattr(self.session.slave), self.session.original)
         self.assertIn(b"\x1b[?1049l", self.session.raw)
@@ -716,10 +779,10 @@ class TerminalSmoke(unittest.TestCase):
         # Text can arrive before the footer, or during a watch-coverage rescan.
         self.session.wait("Rendering", timeout=4)
         self.session.send("n")
-        self.session.wait("a/large.ts · Unified", timeout=3)
+        self.session.wait_selection("large.ts", timeout=3)
         self.session.advance(0.2)
         self.session.send("n")
-        self.session.wait("src/main.rs · Unified", timeout=3)
+        self.session.wait_selection("main.rs", timeout=3)
         self.session.wait("Watching", timeout=3)
         self.assertNotIn("LATE_VALUE", self.session.screen.text)
 

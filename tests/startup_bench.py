@@ -19,15 +19,15 @@ import terminal_smoke
 
 
 def visible_source(screen):
-    # The default sidebar is 38 columns. The unified gutter is 14 columns:
+    # The default sidebar is 34 columns. The unified gutter is 14 columns:
     # two five-digit numbers followed by a diff sign and spaces.
     readable = highlighted = False
-    for row, colors in zip(screen.rows[2:-3], screen.foregrounds[2:-3]):
-        text = "".join(row[39:119])
+    for row, colors in zip(screen.rows[:-3], screen.foregrounds[:-3]):
+        text = "".join(row[34:119])
         if (text[:5].strip().isdigit() or text[6:11].strip().isdigit()) and text[12] in " +-!":
             readable = True
             foregrounds = {
-                color for char, color in zip(text[14:], colors[53:119])
+                color for char, color in zip(text[14:], colors[48:119])
                 if not char.isspace()
             }
             highlighted |= len(foregrounds) > 1
@@ -56,7 +56,7 @@ def measure(repo, config, timeout):
             session.pump(0.01)
             elapsed = (time.monotonic() - start) * 1000
             text = session.screen.text
-            if "Δ WATCH" in text and result["first_frame_ms"] is None:
+            if "All changes" in text and result["first_frame_ms"] is None:
                 result["first_frame_ms"] = elapsed
             readable, highlighted = visible_source(session.screen)
             if readable and result["readable_diff_ms"] is None:
@@ -64,12 +64,13 @@ def measure(repo, config, timeout):
             if highlighted and result["highlighted_ms"] is None:
                 result["highlighted_ms"] = elapsed
             footer = text.splitlines()[-2].strip()
-            if footer.startswith("Error:"):
+            fields = footer.split(" · ")
+            if any(field.startswith("Error:") for field in fields):
                 raise RuntimeError(footer)
-            if footer.startswith(("Watching ·", "Polling ·")):
+            if "Watching" in fields or "Polling" in fields:
                 result["complete_ms"] = elapsed
                 result["native_watches"] = watch_count(session.pid)
-                result["polling"] = footer.startswith("Polling")
+                result["polling"] = "Polling" in fields
                 return result
         raise TimeoutError(f"Startup exceeded {timeout}s; last screen:\n{session.screen.text}")
     finally:

@@ -19,6 +19,12 @@ use std::{
 };
 
 const FILTER_DEBOUNCE: Duration = Duration::from_millis(300);
+const TOAST_DURATION: Duration = Duration::from_secs(3);
+
+struct Toast {
+    message: String,
+    expires_at: Instant,
+}
 
 /// Inputs for an explicit collection request; watch refreshes reuse the latest request.
 #[derive(Debug, Default)]
@@ -98,6 +104,10 @@ pub struct State {
     generation: u64,
     /// Most recent repository collection error, if any.
     error: Option<String>,
+    /// Latest setting notification, removed when its deadline passes.
+    toast: Option<Toast>,
+    /// Whether a user toggle is awaiting a successful whitespace comparison.
+    whitespace_toast_pending: bool,
     /// Whether a repository scan is in progress.
     collecting: bool,
     /// Whether the latest render request is still in progress.
@@ -138,6 +148,9 @@ impl State {
     }
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+    pub fn toast(&self) -> Option<&str> {
+        self.toast.as_ref().map(|toast| toast.message.as_str())
     }
     pub fn help_scroll(&self) -> usize {
         self.help_scroll
@@ -195,6 +208,8 @@ impl State {
             loaded: BTreeSet::new(),
             generation: 0,
             error: None,
+            toast: None,
+            whitespace_toast_pending: false,
             collecting: false,
             rendering: false,
             collection_generation: 0,
@@ -208,6 +223,7 @@ impl State {
             match_index: None,
         }
     }
+
     pub fn update_snapshot(&mut self, snapshot: Snapshot) {
         self.visible_files = snapshot
             .changes
@@ -238,6 +254,7 @@ impl State {
             whitespace: self.whitespace,
         }
     }
+
     fn reconcile_selection(&mut self) {
         let previous = self.selection.clone();
         while !self
@@ -275,15 +292,19 @@ impl State {
         }
         self.reconcile_selection();
     }
+
     pub fn matching_paths(&self) -> &BTreeSet<PathBuf> {
         self.tree.matching_paths()
     }
+
     pub fn selected_changes(&self) -> Vec<usize> {
         self.tree.selected_changes(&self.selection)
     }
+
     pub fn tree(&self, include_collapsed: bool) -> &[TreeRow] {
         self.tree.rows(include_collapsed)
     }
+
     fn next_file(&mut self, forward: bool) {
         let all = self.tree.rows(true);
         let current = all
@@ -307,6 +328,7 @@ impl State {
             }
         }
     }
+
     fn move_tree(&mut self, forward: bool) {
         let rows = self.tree.rows(false);
         let index = rows
@@ -323,6 +345,7 @@ impl State {
             self.scroll = 0;
         }
     }
+
     fn collapse(&mut self) {
         let is_directory = self
             .tree(false)
@@ -335,11 +358,13 @@ impl State {
             self.scroll = 0;
         }
     }
+
     fn expand(&mut self) {
         if self.collapsed.remove(&self.selection) {
             self.tree.reveal(&self.collapsed);
         }
     }
+
     fn enter_directory(&mut self) {
         if self.is_collapsed(&self.selection) {
             self.expand();
@@ -350,6 +375,7 @@ impl State {
             self.scroll = 0;
         }
     }
+
     fn begin_prompt(&mut self, kind: PromptKind) {
         let text = if kind == PromptKind::Filter {
             &self.filter
@@ -366,6 +392,7 @@ impl State {
             filter_deadline: None,
         });
     }
+
     fn prompt_edited(&mut self, now: Instant) -> bool {
         if let Some(prompt) = &mut self.prompt
             && prompt.kind == PromptKind::Filter
@@ -376,6 +403,7 @@ impl State {
         }
         self.apply_prompt()
     }
+
     fn apply_prompt(&mut self) -> bool {
         let mut changed = false;
         if let Some(prompt) = &self.prompt {
@@ -393,6 +421,7 @@ impl State {
         }
         changed
     }
+
     fn finish_prompt(&mut self, accept: bool) -> bool {
         let mut changed = accept && self.apply_prompt();
         if let Some(prompt) = self.prompt.take()
@@ -415,6 +444,7 @@ impl State {
         self.reconcile_selection();
         changed || self.selection != selection
     }
+
     pub fn scroll_by(&mut self, amount: usize, down: bool, height: usize) {
         self.scroll = if down {
             self.scroll.saturating_add(amount)
@@ -423,6 +453,7 @@ impl State {
         }
         .min(self.document.rows.len().saturating_sub(height));
     }
+
     pub fn jump_match(&mut self, forward: bool, height: usize) {
         let hits = &self.document.hits;
         if hits.is_empty() {
@@ -438,11 +469,14 @@ impl State {
                 .unwrap_or(hits.len() - 1),
         };
         self.match_index = Some(index);
+        let context =
+            (height / 3).max(crate::render::FILE_HEADER_ROWS.min(height.saturating_sub(1)));
         self.scroll = hits[index]
             .row
-            .saturating_sub(height / 3)
+            .saturating_sub(context)
             .min(self.document.rows.len().saturating_sub(height));
     }
+
     fn input_action(&mut self, action: Action, now: Instant) -> bool {
         let changed = self
             .prompt
@@ -467,6 +501,7 @@ mod tests {
             ("tests/c.rs", Category::Staged),
         ])
     }
+
     fn snapshot_with(files: &[(&str, Category)]) -> Snapshot {
         Snapshot {
             branch: "main".into(),
@@ -488,6 +523,7 @@ mod tests {
                 .collect(),
         }
     }
+
     fn paths(state: &State) -> Vec<&Path> {
         state
             .tree(false)
@@ -495,11 +531,13 @@ mod tests {
             .map(|row| row.path.as_path())
             .collect()
     }
+
     fn state() -> State {
         let mut state = State::new(false);
         state.update_snapshot(snapshot());
         state
     }
+
     #[test]
     fn a_path_with_two_statuses_has_one_tree_entry() {
         // Given
@@ -514,6 +552,7 @@ mod tests {
             1
         );
     }
+
     #[test]
     fn selecting_a_directory_includes_every_status() {
         // Given
@@ -524,6 +563,7 @@ mod tests {
         // Then
         assert_eq!(selected, vec![0, 1, 2]);
     }
+
     #[test]
     fn next_file_reveals_a_collapsed_path() {
         // Given
@@ -537,6 +577,7 @@ mod tests {
         assert!(!state.is_collapsed(Path::new("src")));
         assert!(paths(&state).contains(&Path::new("src/a.rs")));
     }
+
     #[test]
     fn cancel_filter_restores_query_and_selection() {
         // Given
@@ -552,6 +593,7 @@ mod tests {
         assert_eq!(state.matching_paths().len(), 3);
         assert_eq!(state.tree(false).len(), 6);
     }
+
     #[test]
     fn vanished_file_selects_its_surviving_parent() {
         // Given

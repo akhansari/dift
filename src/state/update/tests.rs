@@ -5,6 +5,7 @@ use crate::{
     render::{Anchor, Document, Hit, Row},
 };
 use ratatui::text::Line;
+mod toasts;
 
 #[test]
 fn whitespace_toggle_requests_ignore_changes_from_the_exact_default() {
@@ -22,6 +23,7 @@ fn whitespace_toggle_requests_ignore_changes_from_the_exact_default() {
     assert!(!effects.render);
     assert_eq!(state.requested_whitespace(), Whitespace::IgnoreChanges);
     assert_eq!(state.snapshot().whitespace, Whitespace::Exact);
+    assert_eq!(state.toast(), None);
 }
 
 #[test]
@@ -77,7 +79,7 @@ fn rapid_toggling_rejects_even_an_obsolete_result_with_the_same_mode() {
         ..Snapshot::default()
     };
     // When
-    let effects = state.collection_finished(obsolete.generation, Ok(result));
+    let effects = state.collection_finished(obsolete.generation, Ok(result), Instant::now());
     // Then
     assert!(!effects.redraw);
     assert!(!effects.render);
@@ -95,6 +97,7 @@ fn an_obsolete_collection_error_does_not_replace_current_status() {
     let effects = state.collection_finished(
         obsolete.generation,
         Err(GitError::Command("obsolete failure".into())),
+        Instant::now(),
     );
     // Then
     assert!(!effects.redraw);
@@ -117,12 +120,14 @@ fn a_failed_toggle_keeps_the_applied_mode_and_hidden_count() {
     state.collection_finished(
         request.generation,
         Err(GitError::Command("cannot compare".into())),
+        Instant::now(),
     );
     // Then
     assert_eq!(state.snapshot().whitespace, Whitespace::IgnoreAll);
     assert_eq!(state.snapshot().whitespace_hidden_files, 5);
     assert_eq!(state.requested_whitespace(), Whitespace::Exact);
     assert_eq!(state.error(), Some("cannot compare"));
+    assert_eq!(state.toast(), None);
 }
 
 #[test]
@@ -138,6 +143,7 @@ fn accepting_a_filtered_snapshot_invalidates_previous_renders() {
             whitespace_hidden_files: 2,
             ..Snapshot::default()
         }),
+        Instant::now(),
     );
     // When
     let accepted = state.apply_render(
@@ -169,7 +175,7 @@ fn switching_whitespace_modes_preserves_scroll_anchors_for_the_first_preview() {
         whitespace: Whitespace::IgnoreChanges,
         whitespace_hidden_files: 0,
     };
-    state.collection_finished(collection.generation, Ok(snapshot));
+    state.collection_finished(collection.generation, Ok(snapshot), Instant::now());
     let request = state.render_request(80, 1);
     // When
     state.apply_render(
@@ -443,8 +449,11 @@ fn a_failed_collection_retains_the_document_and_allows_retry() {
     let (mut state, _) = reading_state();
     state.collection_started(0);
     // When
-    let effects =
-        state.collection_finished(0, Err(GitError::Command("Cannot read repository".into())));
+    let effects = state.collection_finished(
+        0,
+        Err(GitError::Command("Cannot read repository".into())),
+        Instant::now(),
+    );
     // Then
     assert_eq!(effects, Effects::draw(false));
     assert_eq!(state.error(), Some("Cannot read repository"));

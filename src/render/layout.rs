@@ -357,30 +357,21 @@ pub(super) fn file(
 ) -> Result<Document, Cancelled> {
     let change = &prepared.change;
     let width = spec.width.max(4);
-    let split = spec.split && width >= 32;
+    let split = spec.split && width >= MIN_SPLIT_WIDTH;
     let mut old_context = ContextSource::new(change.old_source.as_deref());
     let mut new_context = ContextSource::new(change.new_source.as_deref());
     let query = spec.query;
     let palette = Palette::new(config.light);
     let mut document = Document::default();
     let path = Arc::new(change.path.clone());
-    let name = if let Some(old) = &change.old_path {
-        format!(
-            " {}  {} → {}",
-            change.status,
-            display_path(old),
-            display_path(&change.path)
-        )
-    } else {
-        format!(" {}  {}", change.status, display_path(&change.path))
-    };
+    document.rows.push(Arc::new(Row {
+        line: header::line(change, width, palette),
+        anchors: Vec::new(),
+    }));
     push_header(
         &mut document,
-        &name,
-        palette
-            .base()
-            .bg(palette.panel)
-            .add_modifier(Modifier::BOLD),
+        &"─".repeat(width),
+        palette.base().fg(palette.muted),
     );
     if let Some(summary) = &change.summary {
         for line in summary.lines() {

@@ -7,9 +7,6 @@ use dift::{
 use std::{ffi::OsStr, path::PathBuf, process::ExitCode};
 use usage_rs as usage;
 
-/// A keyboard-centric, live Git diff viewer.
-///
-/// Run without a subcommand to watch all changes in the current repository.
 #[derive(usage::Cli)]
 #[usage(bin = "dift", version)]
 struct Cli {

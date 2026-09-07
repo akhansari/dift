@@ -33,6 +33,7 @@ impl Tracking {
             ..Self::default()
         }
     }
+
     fn insert(&mut self, path: PathBuf, submodule: bool) {
         let path = if self.ignore_case {
             let Some(path) = path.to_str() else {
@@ -48,6 +49,7 @@ impl Tracking {
         }
         self.paths.insert(path);
     }
+
     fn may_contain(&self, path: &Path) -> bool {
         if self.uncertain {
             return true;
@@ -140,6 +142,7 @@ impl Collector {
             .as_ref()
             .is_none_or(|tracking| tracking.may_contain(path))
     }
+
     pub fn new(paths: Repository) -> Result<Self, GitError> {
         let mut repo =
             gix::open(&paths.git_dir).map_err(|e| GitError::access("Open repository", e))?;

@@ -68,6 +68,7 @@ pub enum Scope {
 }
 impl Scope {
     pub const ALL: [Self; 4] = [Self::Global, Self::Tree, Self::Diff, Self::Input];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Global => "global",
@@ -76,6 +77,7 @@ impl Scope {
             Self::Input => "input",
         }
     }
+
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|a| a.name() == s)
     }
@@ -193,9 +195,11 @@ impl Action {
             Self::ClearAfter => "clear-after",
         }
     }
+
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|a| a.name() == s)
     }
+
     pub fn input_only(self) -> bool {
         matches!(
             self,
@@ -244,6 +248,7 @@ impl Key {
         }
         key
     }
+
     pub fn parse(raw: &str) -> Result<Self, BindingError> {
         let mut rest = raw.to_owned();
         let mut mods = KeyModifiers::empty();
@@ -335,7 +340,7 @@ pub struct Bindings(
 impl Bindings {
     pub fn defaults() -> Self {
         let normal = [
-            (Action::Quit, "q ctrl-c"),
+            (Action::Quit, "q"),
             (Action::Sidebar, "e"),
             (Action::Layout, "s"),
             (Action::Whitespace, "w"),
@@ -361,7 +366,6 @@ impl Bindings {
         ];
         let tree = [(Action::Left, "left h"), (Action::Right, "right l")];
         let input = [
-            (Action::Quit, "ctrl-c"),
             (Action::Cancel, "escape"),
             (Action::Accept, "enter"),
             (Action::CursorLeft, "left"),
@@ -420,6 +424,7 @@ impl Bindings {
             }
         })
     }
+
     pub fn keys(&self, scope: Scope, action: Action) -> String {
         self.0
             .get(&scope)
@@ -432,6 +437,7 @@ impl Bindings {
             })
             .unwrap_or_default()
     }
+
     pub fn validate(&self) -> Result<(), BindingError> {
         for scope in Scope::ALL {
             let entries = self
@@ -477,7 +483,6 @@ impl Bindings {
         }
         for (scope, action) in [
             (Scope::Global, Action::Quit),
-            (Scope::Input, Action::Quit),
             (Scope::Input, Action::Cancel),
             (Scope::Input, Action::Accept),
         ] {
@@ -507,14 +512,17 @@ impl Editor {
     pub fn text(&self) -> &str {
         &self.text
     }
+
     /// Cursor byte offset, always at a UTF-8 character boundary.
     pub fn cursor(&self) -> usize {
         self.cursor
     }
+
     pub fn new(text: String) -> Self {
         let cursor = text.len();
         Self { text, cursor }
     }
+
     /// Insert text, returning whether the contents changed.
     pub fn insert(&mut self, text: &str) -> bool {
         let clean: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -522,6 +530,7 @@ impl Editor {
         self.cursor += clean.len();
         !clean.is_empty()
     }
+
     /// Apply an edit, returning whether the contents changed (not the cursor).
     pub fn edit(&mut self, action: Action) -> bool {
         let previous_len = self.text.len();
@@ -571,6 +580,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn backspace_deletes_a_unicode_character_without_corrupting_utf8() {
         // Given
@@ -628,6 +638,7 @@ mod tests {
         assert_eq!(editor.text(), "été ");
         assert_eq!(editor.cursor(), 6);
     }
+
     #[test]
     fn query_input_keeps_normal_quit_key_available_as_text() {
         // Given

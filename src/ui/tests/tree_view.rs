@@ -45,7 +45,7 @@ fn render(state: &State, config: &Config, width: u16, height: u16) -> crate::App
             config,
             frame.area(),
             &mut ListState::default(),
-        )
+        );
     })?;
     Ok(terminal.backend().buffer().clone())
 }
@@ -69,13 +69,12 @@ fn compact_rows_align_counts_and_badges_without_icons() -> crate::AppResult<()> 
     // When
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
-    assert_eq!(line(&buffer, 0), "┌────────────────────────────────┐");
-    assert!(line(&buffer, 1).contains("All changes"));
-    assert_eq!(buffer[(31, 1)].symbol(), "3");
-    assert_eq!(line(&buffer, 2), "│ │ ▾ src                      2 │");
-    assert_eq!(line(&buffer, 4), "│ │     ui.rs                 US │");
-    assert_eq!(buffer[(31, 3)].symbol(), "U");
-    assert_eq!(buffer[(31, 5)].symbol(), "?");
+    assert!(line(&buffer, 0).contains("All changes"));
+    assert_eq!(buffer[(31, 0)].symbol(), "3");
+    assert_eq!(line(&buffer, 1), " │ ▾ src                       2 │");
+    assert_eq!(line(&buffer, 3), " │     ui.rs                  US │");
+    assert_eq!(buffer[(31, 2)].symbol(), "U");
+    assert_eq!(buffer[(31, 4)].symbol(), "?");
     Ok(())
 }
 
@@ -90,14 +89,14 @@ fn nerd_font_icons_fit_the_same_badge_column() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &config, 34, 8)?;
     // Then
-    assert!(line(&buffer, 1).contains(" All changes"));
-    assert_eq!(buffer[(31, 1)].symbol(), "3");
-    assert_eq!(line(&buffer, 2), "│ │  src                      2 │");
-    assert_eq!(buffer[(6, 3)].symbol(), "");
-    assert!(line(&buffer, 3).contains(" state.rs"));
-    assert_eq!(buffer[(31, 3)].symbol(), "U");
-    assert_eq!(buffer[(30, 4)].symbol(), "U");
-    assert_eq!(buffer[(31, 4)].symbol(), "S");
+    assert!(line(&buffer, 0).contains(" All changes"));
+    assert_eq!(buffer[(31, 0)].symbol(), "3");
+    assert_eq!(line(&buffer, 1), " │  src                       2 │");
+    assert_eq!(buffer[(5, 2)].symbol(), "");
+    assert!(line(&buffer, 2).contains(" state.rs"));
+    assert_eq!(buffer[(31, 2)].symbol(), "U");
+    assert_eq!(buffer[(30, 3)].symbol(), "U");
+    assert_eq!(buffer[(31, 3)].symbol(), "S");
     Ok(())
 }
 
@@ -117,9 +116,9 @@ fn collapsed_folders_and_unknown_files_have_distinct_icons() -> crate::AppResult
     // When
     let buffer = render(&state, &config, 34, 8)?;
     // Then
-    assert_eq!(line(&buffer, 2), "│▎   src                      1 │");
-    assert!(line(&buffer, 3).contains(" data.xyz"));
-    assert_eq!(buffer[(2, 3)].symbol(), " ");
+    assert_eq!(line(&buffer, 1), "▎   src                       1 │");
+    assert!(line(&buffer, 2).contains(" data.xyz"));
+    assert_eq!(buffer[(1, 2)].symbol(), " ");
     Ok(())
 }
 
@@ -133,14 +132,14 @@ fn selected_files_stay_visible_when_the_tree_loses_focus() -> crate::AppResult<(
     // When
     let unfocused = render(&state, &Config::default(), 34, 8)?;
     // Then
-    assert_eq!(focused[(1, 3)].symbol(), "▎");
-    assert_eq!(unfocused[(1, 3)].symbol(), " ");
-    assert_ne!(focused[(12, 3)].bg, unfocused[(12, 3)].bg);
-    assert_eq!(unfocused[(12, 3)].bg, Palette::new(false).panel);
-    assert_eq!(focused[(31, 3)].fg, unfocused[(31, 3)].fg);
-    assert_eq!(focused[(4, 3)].symbol(), "│");
-    assert_eq!(unfocused[(4, 3)].symbol(), "│");
-    assert_eq!(unfocused[(2, 3)].symbol(), " ");
+    assert_eq!(focused[(0, 2)].symbol(), "▎");
+    assert_eq!(unfocused[(0, 2)].symbol(), " ");
+    assert_ne!(focused[(11, 2)].bg, unfocused[(11, 2)].bg);
+    assert_eq!(unfocused[(11, 2)].bg, Palette::new(false).panel);
+    assert_eq!(focused[(31, 2)].fg, unfocused[(31, 2)].fg);
+    assert_eq!(focused[(3, 2)].symbol(), "│");
+    assert_eq!(unfocused[(3, 2)].symbol(), "│");
+    assert_eq!(unfocused[(1, 2)].symbol(), " ");
     Ok(())
 }
 
@@ -153,12 +152,12 @@ fn deep_paths_give_space_to_the_filename_and_preserve_its_extension() -> crate::
     let buffer = render(&state, &Config::default(), 16, 12)?;
     // Then
     assert!(
-        line(&buffer, 8).contains("long….rs"),
+        line(&buffer, 7).contains("long…e.rs"),
         "{}",
-        line(&buffer, 8)
+        line(&buffer, 7)
     );
-    assert_eq!(buffer[(13, 8)].symbol(), "U");
-    assert_eq!(buffer[(2, 8)].symbol(), " ");
+    assert_eq!(buffer[(13, 7)].symbol(), "U");
+    assert_eq!(buffer[(1, 7)].symbol(), " ");
     Ok(())
 }
 
@@ -169,27 +168,26 @@ fn unicode_names_keep_combining_marks_and_wide_characters_intact() -> crate::App
     // When
     let buffer = render(&state, &Config::default(), 16, 6)?;
     // Then
-    assert!(line(&buffer, 2).contains("e\u{301}界"));
-    assert!(line(&buffer, 2).contains("….rs"));
-    assert_eq!(buffer[(13, 2)].symbol(), "U");
+    assert!(line(&buffer, 1).contains("e\u{301}界"));
+    assert!(line(&buffer, 1).contains("…"));
+    assert!(line(&buffer, 1).contains(".rs"));
+    assert_eq!(buffer[(13, 1)].symbol(), "U");
     Ok(())
 }
 
 #[test]
-fn filtering_shows_the_query_counts_and_highlights_matches() -> crate::AppResult<()> {
+fn filtering_starts_with_the_root_counts_and_highlights_matches() -> crate::AppResult<()> {
     // Given
     let mut state = sample();
     filter(&mut state, "ui");
     // When
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
-    assert_eq!(line(&buffer, 0), "┌────────────────────────────────┐");
-    assert!(line(&buffer, 1).contains("Filter: ui"));
-    assert!(line(&buffer, 2).contains("All changes"));
-    assert!(line(&buffer, 2).ends_with("1/3 │"));
-    assert_eq!(buffer[(8, 4)].symbol(), "u");
-    assert!(buffer[(8, 4)].modifier.contains(Modifier::UNDERLINED));
-    assert!(!buffer[(10, 4)].modifier.contains(Modifier::UNDERLINED));
+    assert!(line(&buffer, 0).contains("All changes"));
+    assert!(line(&buffer, 0).ends_with("1/3 │"));
+    assert_eq!(buffer[(7, 2)].symbol(), "u");
+    assert!(buffer[(7, 2)].modifier.contains(Modifier::UNDERLINED));
+    assert!(!buffer[(9, 2)].modifier.contains(Modifier::UNDERLINED));
     Ok(())
 }
 
@@ -201,12 +199,12 @@ fn combining_marks_do_not_shift_filter_highlighting() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
-    assert_eq!(buffer[(8, 4)].symbol(), "e\u{301}");
-    assert!(!buffer[(8, 4)].modifier.contains(Modifier::UNDERLINED));
-    assert_eq!(buffer[(9, 4)].symbol(), "l");
-    assert!(buffer[(9, 4)].modifier.contains(Modifier::UNDERLINED));
-    assert!(buffer[(12, 4)].modifier.contains(Modifier::UNDERLINED));
-    assert!(!buffer[(13, 4)].modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(buffer[(7, 2)].symbol(), "e\u{301}");
+    assert!(!buffer[(7, 2)].modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(buffer[(8, 2)].symbol(), "l");
+    assert!(buffer[(8, 2)].modifier.contains(Modifier::UNDERLINED));
+    assert!(buffer[(11, 2)].modifier.contains(Modifier::UNDERLINED));
+    assert!(!buffer[(12, 2)].modifier.contains(Modifier::UNDERLINED));
     Ok(())
 }
 
@@ -224,7 +222,7 @@ fn tiny_panes_omit_prefixes_before_losing_badges() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &config, 8, 6)?;
     // Then
-    assert_eq!(line(&buffer, 2), "│ … US │");
+    assert_eq!(line(&buffer, 1), " l… US │");
     Ok(())
 }
 
@@ -236,9 +234,9 @@ fn an_empty_filter_result_explains_why_the_tree_is_empty() -> crate::AppResult<(
     // When
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
-    assert!(line(&buffer, 2).contains("All changes"));
-    assert!(line(&buffer, 2).ends_with("0/3 │"));
-    assert!(line(&buffer, 3).contains("No matching files"));
+    assert!(line(&buffer, 0).contains("All changes"));
+    assert!(line(&buffer, 0).ends_with("0/3 │"));
+    assert!(line(&buffer, 1).contains("No matching files"));
     Ok(())
 }
 
@@ -249,9 +247,9 @@ fn a_clean_repository_has_a_distinct_empty_state() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &Config::default(), 34, 6)?;
     // Then
-    assert!(line(&buffer, 1).contains("All changes"));
-    assert_eq!(buffer[(31, 1)].symbol(), "0");
-    assert!(line(&buffer, 2).contains("No changes"));
+    assert!(line(&buffer, 0).contains("All changes"));
+    assert_eq!(buffer[(31, 0)].symbol(), "0");
+    assert!(line(&buffer, 1).contains("No changes"));
     Ok(())
 }
 
@@ -268,14 +266,14 @@ fn the_light_palette_preserves_selected_badge_colors() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &config, 34, 8)?;
     // Then
-    assert_eq!(buffer[(1, 3)].symbol(), "▎");
-    assert_ne!(buffer[(31, 3)].fg, buffer[(11, 3)].fg);
-    assert_ne!(buffer[(11, 3)].bg, Palette::new(true).background);
+    assert_eq!(buffer[(0, 2)].symbol(), "▎");
+    assert_ne!(buffer[(31, 2)].fg, buffer[(10, 2)].fg);
+    assert_ne!(buffer[(10, 2)].bg, Palette::new(true).background);
     Ok(())
 }
 
 #[test]
-fn scrolling_keeps_context_and_uses_the_existing_border() -> crate::AppResult<()> {
+fn scrolling_keeps_context_and_a_muted_track_behind_the_thumb() -> crate::AppResult<()> {
     // Given
     let mut state = state_with(&[
         ("a", Category::Unstaged),
@@ -291,12 +289,16 @@ fn scrolling_keeps_context_and_uses_the_existing_border() -> crate::AppResult<()
     state.action(Action::NextFile, 10, Instant::now());
     state.action(Action::NextFile, 10, Instant::now());
     // When
-    let buffer = render(&state, &Config::default(), 34, 7)?;
+    let buffer = render(&state, &Config::default(), 34, 5)?;
     // Then
-    assert!(line(&buffer, 3).contains("d"));
-    assert!(line(&buffer, 1).contains("b"));
-    assert!(line(&buffer, 5).contains("f"));
-    assert_ne!(buffer[(33, 3)].symbol(), "│");
+    assert!(line(&buffer, 2).contains("d"));
+    assert!(line(&buffer, 0).contains("b"));
+    assert!(line(&buffer, 4).contains("f"));
+    assert_eq!(buffer[(33, 0)].symbol(), "│");
+    assert_eq!(buffer[(33, 0)].fg, Palette::new(false).muted);
+    assert_eq!(buffer[(33, 2)].symbol(), "┃");
+    assert_eq!(buffer[(33, 4)].symbol(), "│");
+    assert_eq!(buffer[(33, 4)].fg, Palette::new(false).muted);
     Ok(())
 }
 
@@ -317,13 +319,13 @@ fn a_selected_directory_guides_its_subtree_without_marking_other_branches() -> c
     // When
     let buffer = render(&state, &Config::default(), 34, 10)?;
     // Then
-    assert_eq!(buffer[(2, 2)].symbol(), " ");
-    assert_eq!(buffer[(4, 3)].symbol(), "│");
-    assert_eq!(buffer[(4, 4)].symbol(), "│");
-    assert_eq!(buffer[(4, 5)].symbol(), "│");
-    assert_eq!(buffer[(6, 4)].symbol(), " ");
-    assert_eq!(buffer[(2, 7)].symbol(), " ");
-    assert_eq!(buffer[(4, 7)].symbol(), " ");
+    assert_eq!(buffer[(1, 1)].symbol(), " ");
+    assert_eq!(buffer[(3, 2)].symbol(), "│");
+    assert_eq!(buffer[(3, 3)].symbol(), "│");
+    assert_eq!(buffer[(3, 4)].symbol(), "│");
+    assert_eq!(buffer[(5, 3)].symbol(), " ");
+    assert_eq!(buffer[(1, 6)].symbol(), " ");
+    assert_eq!(buffer[(3, 6)].symbol(), " ");
     Ok(())
 }
 
@@ -339,12 +341,12 @@ fn a_nested_file_guides_only_its_immediate_parent() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &config, 34, 10)?;
     // Then
-    assert_eq!(buffer[(2, 4)].symbol(), " ");
-    assert_eq!(buffer[(4, 4)].symbol(), " ");
-    assert_eq!(buffer[(6, 4)].symbol(), "│");
-    assert_eq!(buffer[(4, 5)].symbol(), " ");
-    assert_eq!(buffer[(4, 7)].symbol(), " ");
-    assert_eq!(buffer[(31, 4)].symbol(), "U");
+    assert_eq!(buffer[(1, 3)].symbol(), " ");
+    assert_eq!(buffer[(3, 3)].symbol(), " ");
+    assert_eq!(buffer[(5, 3)].symbol(), "│");
+    assert_eq!(buffer[(3, 4)].symbol(), " ");
+    assert_eq!(buffer[(3, 6)].symbol(), " ");
+    assert_eq!(buffer[(31, 3)].symbol(), "U");
     Ok(())
 }
 
@@ -356,8 +358,8 @@ fn the_active_directory_has_a_guide_even_without_following_siblings() -> crate::
     // When
     let buffer = render(&state, &Config::default(), 34, 6)?;
     // Then
-    assert_eq!(buffer[(4, 3)].symbol(), "│");
-    assert_eq!(buffer[(2, 3)].symbol(), " ");
+    assert_eq!(buffer[(3, 2)].symbol(), "│");
+    assert_eq!(buffer[(1, 2)].symbol(), " ");
     Ok(())
 }
 
@@ -369,10 +371,10 @@ fn selecting_a_root_file_activates_the_repository_guide() -> crate::AppResult<()
     // When
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
-    assert_eq!(buffer[(2, 2)].symbol(), "│");
-    assert_eq!(buffer[(2, 3)].symbol(), "│");
-    assert_eq!(buffer[(2, 5)].symbol(), "│");
-    assert_eq!(buffer[(4, 3)].symbol(), " ");
+    assert_eq!(buffer[(1, 1)].symbol(), "│");
+    assert_eq!(buffer[(1, 2)].symbol(), "│");
+    assert_eq!(buffer[(1, 4)].symbol(), "│");
+    assert_eq!(buffer[(3, 2)].symbol(), " ");
     Ok(())
 }
 
@@ -385,8 +387,8 @@ fn filtering_keeps_the_selected_files_parent_guide() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
-    assert_eq!(buffer[(4, 4)].symbol(), "│");
-    assert_eq!(buffer[(2, 4)].symbol(), " ");
-    assert!(line(&buffer, 4).contains("state.rs"));
+    assert_eq!(buffer[(3, 2)].symbol(), "│");
+    assert_eq!(buffer[(1, 2)].symbol(), " ");
+    assert!(line(&buffer, 2).contains("state.rs"));
     Ok(())
 }
