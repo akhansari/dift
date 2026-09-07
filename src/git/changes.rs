@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, ffi::OsString, path::PathBuf, sync::Arc};
 
 use crate::config::Whitespace;
-use crate::model::{Category, Change, Hunk, LineKind, Snapshot, SourceLine};
+use crate::model::{Category, Change, Hunk, LineKind, LineStats, Snapshot, SourceLine};
 
 use super::{
     Collector, GitError, Limits, Mode,
@@ -9,6 +9,12 @@ use super::{
     path_from_bytes,
     source::{self, Entry, TextSource},
 };
+
+struct TrackedChanges {
+    changes: Vec<Change>,
+    exact_paths: BTreeSet<PathBuf>,
+    stats: LineStats,
+}
 
 impl Collector {
     pub fn snapshot(
@@ -34,10 +40,11 @@ impl Collector {
             ..Snapshot::default()
         };
         let mut exact_paths = BTreeSet::new();
+        let mut stats = LineStats::default();
         match mode {
             Mode::Comparison { base, head, label } => {
                 result.branch.clone_from(label);
-                let (changes, paths) = self.tracked(
+                let tracked = self.tracked(
                     Category::Comparison,
                     &[base.as_str(), head.as_str()],
                     limits,
@@ -45,8 +52,9 @@ impl Collector {
                     &[],
                     whitespace,
                 )?;
-                result.changes = changes;
-                exact_paths.extend(paths);
+                result.changes = tracked.changes;
+                exact_paths.extend(tracked.exact_paths);
+                stats = tracked.stats;
             }
             Mode::Watch => {
                 let status = self.status()?;
@@ -72,10 +80,13 @@ impl Collector {
                     (Category::Unstaged, &[][..]),
                     (Category::Staged, &["--cached"][..]),
                 ] {
-                    let (changes, paths) =
+                    let tracked =
                         self.tracked(category, extra, limits, loaded, &conflicts, whitespace)?;
-                    result.changes.extend(changes);
-                    exact_paths.extend(paths);
+                    result.changes.extend(tracked.changes);
+                    exact_paths.extend(tracked.exact_paths);
+                    stats = stats.checked_add(tracked.stats).ok_or_else(|| {
+                        GitError::InvalidOutput("Git line statistics overflow".into())
+                    })?;
                 }
             }
         }
@@ -83,6 +94,7 @@ impl Collector {
             exact_paths.remove(&change.path);
         }
         result.whitespace_hidden_files = exact_paths.len();
+        result.tracked_stats = Some(stats);
         result.sort();
         Ok(result)
     }
@@ -95,7 +107,7 @@ impl Collector {
         loaded: &BTreeSet<PathBuf>,
         conflicts: &[PathBuf],
         whitespace: Whitespace,
-    ) -> Result<(Vec<Change>, BTreeSet<PathBuf>), GitError> {
+    ) -> Result<TrackedChanges, GitError> {
         let exact_paths = if whitespace == Whitespace::Exact {
             BTreeSet::new()
         } else {
@@ -109,14 +121,19 @@ impl Collector {
         let output = self
             .paths
             .run(diff_args(extra, conflicts, whitespace, false))?;
-        let changes = parse_raw_patch(&output)?
+        let (records, stats) = parse_raw_patch(&output)?;
+        let changes = records
             .into_iter()
             .map(|record| {
                 let explicitly_loaded = loaded.contains(&record.path);
                 self.tracked_change(record, category, limits, explicitly_loaded)
             })
             .collect::<Result<_, _>>()?;
-        Ok((changes, exact_paths))
+        Ok(TrackedChanges {
+            changes,
+            exact_paths,
+            stats,
+        })
     }
 
     fn tracked_change(
@@ -358,7 +375,7 @@ fn diff_args(
         if names_only {
             &["--name-only"][..]
         } else {
-            &["--raw", "--patch"][..]
+            &["--raw", "--numstat", "--patch"][..]
         }
         .iter()
         .map(OsString::from),

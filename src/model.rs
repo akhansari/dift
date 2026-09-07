@@ -75,6 +75,24 @@ pub struct Change {
     pub new_source: Option<Arc<str>>,
 }
 
+/// Added and removed lines reported by Git, independently of preview limits.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LineStats {
+    /// Lines added across the counted diffs.
+    pub added: u64,
+    /// Lines removed across the counted diffs.
+    pub removed: u64,
+}
+
+impl LineStats {
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            added: self.added.checked_add(other.added)?,
+            removed: self.removed.checked_add(other.removed)?,
+        })
+    }
+}
+
 /// Collected repository changes and their display label.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -86,6 +104,9 @@ pub struct Snapshot {
     pub whitespace: Whitespace,
     /// Distinct paths hidden in every category by whitespace comparison.
     pub whitespace_hidden_files: usize,
+    /// Whole-repository tracked totals for the active comparison and whitespace policy.
+    /// Untracked files and unresolved conflicts are excluded. `None` means uncollected.
+    pub tracked_stats: Option<LineStats>,
 }
 
 impl Snapshot {

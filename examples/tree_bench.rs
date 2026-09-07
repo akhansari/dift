@@ -12,6 +12,7 @@ fn fixture(files: usize, nested: bool) -> Snapshot {
         branch: "benchmark".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,
+        tracked_stats: None,
         changes: (0..files)
             .map(|i| Change {
                 path: if nested {

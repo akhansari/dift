@@ -1,7 +1,7 @@
 use dift::{
     AppResult,
     git::{Collector, GitError, Limits, Mode, Repository},
-    model::{Category, LineKind},
+    model::{Category, LineKind, LineStats},
 };
 use std::{
     collections::BTreeSet,
@@ -11,6 +11,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "git_workflows/stats.rs"]
+mod stats;
 #[path = "git_workflows/whitespace.rs"]
 mod whitespace;
 
@@ -261,6 +263,13 @@ fn comparison_is_fixed_even_when_a_branch_moves() -> AppResult<()> {
     // Then
     assert_eq!(snapshot.changes[0].new_source.as_deref(), Some("second\n"));
     assert_eq!(snapshot.changes[0].category, Category::Comparison);
+    assert_eq!(
+        snapshot.tracked_stats,
+        Some(LineStats {
+            added: 1,
+            removed: 3
+        })
+    );
     Ok(())
 }
 
@@ -283,6 +292,13 @@ fn review_excludes_changes_unique_to_the_base_branch() -> AppResult<()> {
     // Then
     assert_eq!(snapshot.changes.len(), 1);
     assert_eq!(snapshot.changes[0].path, Path::new("feature.txt"));
+    assert_eq!(
+        snapshot.tracked_stats,
+        Some(LineStats {
+            added: 1,
+            removed: 0
+        })
+    );
     Ok(())
 }
 

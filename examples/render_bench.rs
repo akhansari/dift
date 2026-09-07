@@ -55,6 +55,7 @@ fn fixture(lines: usize, last: &str, dense: bool) -> Snapshot {
         branch: "benchmark".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,
+        tracked_stats: None,
         changes: vec![Change {
             path: "large.ts".into(),
             old_path: None,

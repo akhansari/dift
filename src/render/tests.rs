@@ -9,6 +9,7 @@ fn snapshot() -> Snapshot {
         branch: "main".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,
+        tracked_stats: None,
         changes: vec![Change {
             path: "main.rs".into(),
             old_path: None,

@@ -8,6 +8,7 @@ use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 mod headers;
 mod mouse;
 mod selection;
+mod stats;
 
 fn state_with(path: &str, lines: usize) -> State {
     let mut state = State::new(false);

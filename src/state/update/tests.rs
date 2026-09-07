@@ -8,6 +8,58 @@ use ratatui::text::Line;
 mod toasts;
 
 #[test]
+fn obsolete_collections_cannot_replace_the_current_totals() {
+    // Given
+    let mut state = State::new(false);
+    let current = crate::model::LineStats {
+        added: 8,
+        removed: 3,
+    };
+    state.update_snapshot(Snapshot {
+        tracked_stats: Some(current),
+        ..Snapshot::default()
+    });
+    let obsolete = state.collection_request();
+    state.collection_request();
+    // When
+    let effects = state.collection_finished(
+        obsolete.generation,
+        Ok(Snapshot {
+            tracked_stats: Some(crate::model::LineStats::default()),
+            ..Snapshot::default()
+        }),
+        Instant::now(),
+    );
+    // Then
+    assert_eq!(state.snapshot().tracked_stats, Some(current));
+    assert!(!effects.redraw);
+}
+
+#[test]
+fn a_successful_collection_publishes_new_totals() {
+    // Given
+    let mut state = State::new(false);
+    let request = state.collection_request();
+    let stats = crate::model::LineStats {
+        added: 8,
+        removed: 3,
+    };
+    // When
+    let effects = state.collection_finished(
+        request.generation,
+        Ok(Snapshot {
+            tracked_stats: Some(stats),
+            ..Snapshot::default()
+        }),
+        Instant::now(),
+    );
+    // Then
+    assert_eq!(state.snapshot().tracked_stats, Some(stats));
+    assert!(effects.redraw);
+    assert!(!state.collecting());
+}
+
+#[test]
 fn whitespace_toggle_requests_ignore_changes_from_the_exact_default() {
     // Given
     let mut state = State::new(false);
@@ -174,6 +226,7 @@ fn switching_whitespace_modes_preserves_scroll_anchors_for_the_first_preview() {
         branch: "main".into(),
         whitespace: Whitespace::IgnoreChanges,
         whitespace_hidden_files: 0,
+        tracked_stats: None,
     };
     state.collection_finished(collection.generation, Ok(snapshot), Instant::now());
     let request = state.render_request(80, 1);
@@ -245,6 +298,7 @@ fn reading_state() -> (State, u64) {
         branch: "main".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,
+        tracked_stats: None,
     });
     state.action(Action::Search, 10, Instant::now());
     state.paste("two", Instant::now());

@@ -434,6 +434,7 @@ mod tests {
             branch: "main".into(),
             whitespace: Default::default(),
             whitespace_hidden_files: 0,
+            tracked_stats: None,
             changes: files
                 .iter()
                 .map(|(path, category)| Change {

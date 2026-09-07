@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::model::{Hunk, LineKind, SourceLine};
+use crate::model::{Hunk, LineKind, LineStats, SourceLine};
 
 use super::{GitError, path_from_bytes};
 
@@ -92,7 +92,7 @@ fn take_nul<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], GitError> {
     Ok(value)
 }
 
-pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<Vec<RawPatch>, GitError> {
+pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<(Vec<RawPatch>, LineStats), GitError> {
     let mut records = Vec::new();
     while input.first() == Some(&b':') {
         let header = String::from_utf8_lossy(take_nul(&mut input)?);
@@ -118,6 +118,44 @@ pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<Vec<RawPatch>, GitErro
             patch: String::new(),
         });
     }
+    // Git emits raw records, matching numstat records, then a NUL and patch text.
+    let stats = records
+        .iter()
+        .try_fold(LineStats::default(), |total, record| {
+            let entry = take_nul(&mut input)?;
+            let mut fields = entry.splitn(3, |byte| *byte == b'\t');
+            let invalid = || GitError::InvalidOutput("Invalid Git numstat record".into());
+            let added = fields.next().ok_or_else(invalid)?;
+            let removed = fields.next().ok_or_else(invalid)?;
+            let path = fields.next().ok_or_else(invalid)?;
+            let (path, old_path) = if path.is_empty() {
+                let old = path_from_bytes(take_nul(&mut input)?);
+                (path_from_bytes(take_nul(&mut input)?), Some(old))
+            } else {
+                (path_from_bytes(path), None)
+            };
+            if path != record.path || old_path != record.old_path {
+                return Err(GitError::InvalidOutput(
+                    "Git numstat paths do not match raw records".into(),
+                ));
+            }
+            let counts = if added == b"-" && removed == b"-" {
+                LineStats::default()
+            } else {
+                LineStats {
+                    added: parse_count(added)?,
+                    removed: parse_count(removed)?,
+                }
+            };
+            total
+                .checked_add(counts)
+                .ok_or_else(|| GitError::InvalidOutput("Git line statistics overflow".into()))
+        })?;
+    if !records.is_empty() {
+        input = input
+            .strip_prefix(b"\0")
+            .ok_or_else(|| GitError::InvalidOutput("Missing Git patch separator".into()))?;
+    }
     let text = String::from_utf8_lossy(input);
     let mut patches = Vec::new();
     let mut current = String::new();
@@ -141,7 +179,18 @@ pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<Vec<RawPatch>, GitErro
     for (record, patch) in records.iter_mut().zip(patches) {
         record.patch = patch;
     }
-    Ok(records)
+    Ok((records, stats))
+}
+
+fn parse_count(input: &[u8]) -> Result<u64, GitError> {
+    let invalid = || GitError::InvalidOutput("Invalid Git numstat count".into());
+    if input.is_empty() || !input.iter().all(u8::is_ascii_digit) {
+        return Err(invalid());
+    }
+    std::str::from_utf8(input)
+        .map_err(|_| invalid())?
+        .parse()
+        .map_err(|_| invalid())
 }
 
 pub fn parse_patch(patch: &str) -> (Vec<Hunk>, String) {
@@ -213,6 +262,57 @@ pub fn parse_patch(patch: &str) -> (Vec<Hunk>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output_with_numstat(entry: &str) -> String {
+        format!(":100644 100644 aaaa bbbb M\0file\0{entry}\0\0diff --git a/file b/file\n")
+    }
+
+    macro_rules! malformed_numstat {
+        ($name:ident, $entry:expr) => {
+            #[test]
+            fn $name() {
+                // Given
+                let output = output_with_numstat($entry);
+                // When
+                let result = parse_raw_patch(output.as_bytes());
+                // Then
+                assert!(matches!(result, Err(GitError::InvalidOutput(_))));
+            }
+        };
+    }
+
+    malformed_numstat!(missing_counts_are_rejected, "file");
+    malformed_numstat!(nonnumeric_counts_are_rejected, "bad\t1\tfile");
+    malformed_numstat!(signed_counts_are_rejected, "+1\t1\tfile");
+    malformed_numstat!(half_binary_counts_are_rejected, "-\t1\tfile");
+    malformed_numstat!(
+        overflowing_counts_are_rejected,
+        "18446744073709551616\t0\tfile"
+    );
+    malformed_numstat!(mismatched_paths_are_rejected, "1\t1\tother");
+
+    #[test]
+    fn truncated_numstat_records_are_rejected() {
+        // Given
+        let output = b":100644 100644 aaaa bbbb M\0file\0";
+        // When
+        let result = parse_raw_patch(output);
+        // Then
+        assert!(matches!(result, Err(GitError::InvalidOutput(_))));
+    }
+
+    #[test]
+    fn overflowing_totals_are_rejected() {
+        // Given
+        let output = b":100644 100644 aaaa bbbb M\0one\0:100644 100644 aaaa bbbb M\0two\0\
+            18446744073709551615\t0\tone\0\
+            1\t0\ttwo\0\0diff --git a/one b/one\ndiff --git a/two b/two\n";
+        // When
+        let result = parse_raw_patch(output);
+        // Then
+        assert!(matches!(result, Err(GitError::InvalidOutput(_))));
+    }
+
     #[test]
     fn patch_preserves_line_numbers_and_content_that_looks_like_a_header() {
         // Given

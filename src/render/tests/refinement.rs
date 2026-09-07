@@ -6,6 +6,7 @@ fn replacement(old: &[&str], new: &[&str]) -> Snapshot {
         branch: "main".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,
+        tracked_stats: None,
         changes: vec![Change {
             path: "change.txt".into(),
             old_path: None,

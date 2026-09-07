@@ -4,6 +4,7 @@ mod collect;
 #[cfg(test)]
 mod fixtures;
 mod selection;
+mod stats;
 mod tree;
 mod watch;
 
@@ -470,6 +471,9 @@ fn draw(
                 muted,
             ));
         }
+        if let Some(totals) = state.snapshot().tracked_stats {
+            stats::append(&mut spans, totals, usize::from(view.status.width), palette);
+        }
         spans
     };
     frame.render_widget(
@@ -513,12 +517,13 @@ fn draw(
     } else {
         let keys = |action| config.bindings.keys(Scope::Global, action);
         let footer = format!(
-            " {} files  {} filter  {} search  {} layout  {} whitespace  {} help  {} quit",
+            " {} files  {} view  {} sidebar  {} split  {} filter  {} search  {} help  {} quit",
             format_args!("{}/{}", keys(Action::NextFile), keys(Action::PreviousFile)),
+            format_args!("{}/{}", keys(Action::HalfDown), keys(Action::HalfUp)),
+            keys(Action::Sidebar),
+            keys(Action::Layout),
             keys(Action::Filter),
             keys(Action::Search),
-            keys(Action::Layout),
-            keys(Action::Whitespace),
             keys(Action::Help),
             keys(Action::Quit)
         );
