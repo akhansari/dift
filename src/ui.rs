@@ -393,8 +393,15 @@ fn draw(
             .collect();
         frame.render_widget(Paragraph::new(header).style(palette.base()), header_area);
         if state.focus() == Scope::Diff && !header_area.is_empty() {
+            frame.buffer_mut().set_style(
+                Rect {
+                    height: 1,
+                    ..header_area
+                },
+                Style::default().bg(palette.focused),
+            );
             frame.render_widget(
-                Paragraph::new("▎").style(palette.base().bg(palette.panel).fg(palette.accent)),
+                Paragraph::new("▎").style(palette.base().bg(palette.focused).fg(palette.accent)),
                 Rect {
                     width: 1,
                     height: 1,

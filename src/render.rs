@@ -178,6 +178,8 @@ pub struct Palette {
     pub muted: Color,
     /// Background color for panels and headers.
     pub panel: Color,
+    /// Background color for the focused selection or file header.
+    pub focused: Color,
     /// Readable foreground color for addition labels.
     pub added_foreground: Color,
     /// Readable foreground color for deletion labels.
@@ -201,6 +203,7 @@ impl Palette {
                 foreground: Color::Rgb(35, 40, 52),
                 muted: Color::Rgb(113, 119, 132),
                 panel: Color::Rgb(236, 239, 244),
+                focused: Color::Rgb(218, 229, 247),
                 added_foreground: Color::Rgb(39, 115, 69),
                 removed_foreground: Color::Rgb(166, 46, 62),
                 accent: Color::Rgb(44, 91, 181),
@@ -215,6 +218,7 @@ impl Palette {
                 foreground: Color::Rgb(211, 217, 228),
                 muted: Color::Rgb(114, 127, 151),
                 panel: Color::Rgb(28, 33, 44),
+                focused: Color::Rgb(35, 48, 68),
                 added_foreground: Color::Rgb(124, 181, 141),
                 removed_foreground: Color::Rgb(229, 143, 150),
                 accent: Color::Rgb(131, 180, 255),

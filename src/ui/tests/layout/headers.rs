@@ -41,7 +41,9 @@ fn scrolling_keeps_the_file_header_above_visible_source() -> AppResult<()> {
     assert_eq!(buffer[(0, 1)].fg, Palette::new(false).muted);
     assert_eq!(markers(&buffer, 0), vec![0]);
     assert_eq!(buffer[(0, 0)].fg, Palette::new(false).accent);
-    assert_eq!(buffer[(58, 0)].bg, Palette::new(false).panel);
+    assert_eq!(buffer[(0, 0)].bg, Palette::new(false).focused);
+    assert_eq!(buffer[(2, 0)].bg, Palette::new(false).focused);
+    assert_eq!(buffer[(58, 0)].bg, Palette::new(false).focused);
     assert_eq!(buffer[(59, 0)].bg, Palette::new(false).background);
     Ok(())
 }
@@ -58,6 +60,8 @@ fn only_the_first_visible_file_header_is_marked_before_scrolling() -> AppResult<
     assert!(line(&buffer, 1).contains("first.rs"));
     assert!(line(&buffer, 7).contains("second.rs"));
     assert_eq!(markers(&buffer, 0), vec![1]);
+    assert_eq!(buffer[(2, 1)].bg, Palette::new(false).focused);
+    assert_eq!(buffer[(2, 7)].bg, Palette::new(false).panel);
     Ok(())
 }
 
@@ -117,6 +121,8 @@ fn returning_focus_to_the_tree_clears_the_marker_without_shifting_the_header() -
     assert_eq!(buffer[(34, 0)].symbol(), " ");
     assert_eq!(markers(buffer, 34), Vec::<u16>::new());
     assert_eq!(buffer[(0, 0)].symbol(), "▎");
+    assert_eq!(buffer[(34, 0)].bg, Palette::new(false).panel);
+    assert_eq!(buffer[(36, 0)].bg, Palette::new(false).panel);
     Ok(())
 }
 
@@ -173,7 +179,9 @@ fn light_headers_emphasize_the_basename_and_color_the_counts() -> AppResult<()> 
     assert_eq!(buffer[(72, 1)].fg, palette.added_foreground);
     assert_eq!(buffer[(76, 1)].fg, palette.removed_foreground);
     assert_eq!(buffer[(0, 1)].fg, palette.accent);
-    assert_eq!(buffer[(78, 1)].bg, palette.panel);
+    assert_eq!(buffer[(0, 1)].bg, palette.focused);
+    assert_eq!(buffer[(9, 1)].bg, palette.focused);
+    assert_eq!(buffer[(78, 1)].bg, palette.focused);
     assert_eq!(line(&buffer, 2).trim(), "─".repeat(79));
     assert_eq!(buffer[(0, 2)].fg, palette.muted);
     assert_eq!(buffer[(0, 2)].bg, palette.background);

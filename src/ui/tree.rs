@@ -199,11 +199,7 @@ pub(super) fn draw(
             ))
         });
     let selected_background = if focused {
-        if config.light {
-            Color::Rgb(218, 229, 247)
-        } else {
-            Color::Rgb(35, 48, 68)
-        }
+        palette.focused
     } else {
         palette.panel
     };
