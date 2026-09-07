@@ -1,3 +1,4 @@
+use base64::{display::Base64Display, engine::general_purpose::STANDARD};
 use std::io::{self, Write};
 
 /// Write UTF-8 source text to the terminal clipboard using OSC 52.
@@ -5,30 +6,11 @@ pub(super) fn copy(output: &mut impl Write, text: &str) -> io::Result<()> {
     if text.is_empty() {
         return Ok(());
     }
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut sequence = Vec::with_capacity(9 + text.len().div_ceil(3) * 4);
-    sequence.extend_from_slice(b"\x1b]52;c;");
-    for chunk in text.as_bytes().chunks(3) {
-        let a = chunk[0];
-        let b = chunk.get(1).copied().unwrap_or(0);
-        let c = chunk.get(2).copied().unwrap_or(0);
-        sequence.extend_from_slice(&[
-            ALPHABET[usize::from(a >> 2)],
-            ALPHABET[usize::from((a & 3) << 4 | b >> 4)],
-            if chunk.len() > 1 {
-                ALPHABET[usize::from((b & 15) << 2 | c >> 6)]
-            } else {
-                b'='
-            },
-            if chunk.len() > 2 {
-                ALPHABET[usize::from(c & 63)]
-            } else {
-                b'='
-            },
-        ]);
-    }
-    sequence.extend_from_slice(b"\x1b\\");
-    output.write_all(&sequence)?;
+    let sequence = format!(
+        "\x1b]52;c;{}\x1b\\",
+        Base64Display::new(text.as_bytes(), &STANDARD)
+    );
+    output.write_all(sequence.as_bytes())?;
     output.flush()
 }
 

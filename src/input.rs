@@ -1,63 +1,24 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{collections::BTreeMap, fmt};
+use thiserror::Error;
 
 /// An error parsing or validating keyboard shortcuts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BindingError {
-    InvalidKey {
-        input: String,
-    },
-    UnavailableAction {
-        scope: Scope,
-        action: Action,
-    },
+    #[error("Invalid key {input:?}; use a single key with optional ctrl-/alt-/shift- modifiers")]
+    InvalidKey { input: String },
+    #[error("{} {}", .action.name(), if matches!(.scope, Scope::Input) { "is unavailable while editing input" } else { "belongs in the input scope" })]
+    UnavailableAction { scope: Scope, action: Action },
+    #[error("Conflicting {} key {key}: {} and {}", .scope.name(), .first.name(), .second.name())]
     Conflict {
         scope: Scope,
         key: Key,
         first: Action,
         second: Action,
     },
-    MissingBinding {
-        scope: Scope,
-        action: Action,
-    },
+    #[error("{}.{} needs at least one key", .scope.name(), .action.name())]
+    MissingBinding { scope: Scope, action: Action },
 }
-impl fmt::Display for BindingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidKey { input } => write!(
-                f,
-                "Invalid key {input:?}; use a single key with optional ctrl-/alt-/shift- modifiers"
-            ),
-            Self::UnavailableAction {
-                scope: Scope::Input,
-                action,
-            } => write!(f, "{} is unavailable while editing input", action.name()),
-            Self::UnavailableAction { action, .. } => {
-                write!(f, "{} belongs in the input scope", action.name())
-            }
-            Self::Conflict {
-                scope,
-                key,
-                first,
-                second,
-            } => write!(
-                f,
-                "Conflicting {} key {key}: {} and {}",
-                scope.name(),
-                first.name(),
-                second.name()
-            ),
-            Self::MissingBinding { scope, action } => write!(
-                f,
-                "{}.{} needs at least one key",
-                scope.name(),
-                action.name()
-            ),
-        }
-    }
-}
-impl std::error::Error for BindingError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scope {

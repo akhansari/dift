@@ -1,12 +1,12 @@
 use std::{
     collections::BTreeSet,
     ffi::OsStr,
-    fmt,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
 use crate::model::Snapshot;
+use thiserror::Error;
 
 mod changes;
 mod collector;
@@ -16,44 +16,25 @@ pub use collector::Collector;
 pub(crate) use collector::WatchContext;
 pub use patch::parse_patch;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum GitError {
-    Io(std::io::Error),
+    #[error("Git I/O: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
     Command(String),
+    #[error("{0}")]
     InvalidOutput(String),
+    #[error("{operation}: {source}")]
     Access {
         operation: &'static str,
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    #[error("{operation} {}: {source}", .path.display())]
     File {
         operation: &'static str,
         path: PathBuf,
         source: std::io::Error,
     },
-}
-impl fmt::Display for GitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Access { operation, source } => write!(f, "{operation}: {source}"),
-            Self::File {
-                operation,
-                path,
-                source,
-            } => write!(f, "{operation} {}: {source}", path.display()),
-            Self::Io(e) => write!(f, "Git I/O: {e}"),
-            Self::Command(s) | Self::InvalidOutput(s) => f.write_str(s),
-        }
-    }
-}
-impl std::error::Error for GitError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            Self::Access { source, .. } => Some(source.as_ref()),
-            Self::File { source, .. } => Some(source),
-            _ => None,
-        }
-    }
 }
 impl GitError {
     fn file(operation: &'static str, path: &Path, source: std::io::Error) -> Self {
@@ -74,12 +55,6 @@ impl GitError {
         }
     }
 }
-impl From<std::io::Error> for GitError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
 /// Repository paths used for Git commands and filesystem watching.
 #[derive(Debug, Clone)]
 pub struct Repository {

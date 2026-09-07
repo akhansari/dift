@@ -1,122 +1,51 @@
 use crate::input::BindingError;
-use std::{error::Error, fmt, io, num::TryFromIntError, path::PathBuf};
+use std::{io, num::TryFromIntError, path::PathBuf};
+use thiserror::Error;
 
 /// A failure reading, parsing, or validating application configuration.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ConfigError {
-    Read {
-        path: PathBuf,
-        source: io::Error,
-    },
-    Parse(kdl::KdlError),
-    Validation(ValidationError),
-    Binding(BindingError),
+    #[error("Cannot read config {}: {source}", .path.display())]
+    Read { path: PathBuf, source: io::Error },
+    #[error("{0}")]
+    Parse(#[from] kdl::KdlError),
+    #[error("{0}")]
+    Validation(#[from] ValidationError),
+    #[error("{0}")]
+    Binding(#[from] BindingError),
     /// The file containing an invalid configuration, with its original cause.
+    #[error("Invalid config {}: {source}", .path.display())]
     AtPath {
         path: PathBuf,
         source: Box<ConfigError>,
     },
 }
 
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read { path, source } => {
-                write!(f, "Cannot read config {}: {source}", path.display())
-            }
-            Self::AtPath { path, source } => {
-                write!(f, "Invalid config {}: {source}", path.display())
-            }
-            Self::Parse(error) => error.fmt(f),
-            Self::Validation(error) => error.fmt(f),
-            Self::Binding(error) => error.fmt(f),
-        }
-    }
-}
-impl Error for ConfigError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Read { source, .. } => Some(source),
-            Self::AtPath { source, .. } => Some(source.as_ref()),
-            Self::Parse(error) => Some(error),
-            Self::Validation(error) => Some(error),
-            Self::Binding(error) => Some(error),
-        }
-    }
-}
-impl From<kdl::KdlError> for ConfigError {
-    fn from(error: kdl::KdlError) -> Self {
-        Self::Parse(error)
-    }
-}
-impl From<ValidationError> for ConfigError {
-    fn from(error: ValidationError) -> Self {
-        Self::Validation(error)
-    }
-}
-impl From<BindingError> for ConfigError {
-    fn from(error: BindingError) -> Self {
-        Self::Binding(error)
-    }
-}
-
 /// A syntactically valid setting that does not satisfy the configuration schema.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ValidationError {
-    Duplicate {
-        setting: String,
-    },
-    Unknown {
-        setting: String,
-    },
-    ArgumentsNotAllowed {
-        setting: String,
-    },
-    ChildBlockRequired {
-        setting: String,
-    },
-    ChildBlockNotAllowed {
-        setting: String,
-    },
+    #[error("Duplicate {setting}")]
+    Duplicate { setting: String },
+    #[error("Unknown {setting}")]
+    Unknown { setting: String },
+    #[error("{setting} cannot have arguments")]
+    ArgumentsNotAllowed { setting: String },
+    #[error("{setting} requires a child block")]
+    ChildBlockRequired { setting: String },
+    #[error("{setting} cannot have child blocks")]
+    ChildBlockNotAllowed { setting: String },
+    #[error("{setting} expects {expected}")]
     ExpectedValue {
         setting: String,
         expected: &'static str,
     },
+    #[error("Only a string do property is supported on bindings")]
     UnsupportedBindingProperty,
-    UnknownBindingOperation {
-        operation: String,
-    },
+    #[error("Unknown binding operation {operation}")]
+    UnknownBindingOperation { operation: String },
+    #[error("{setting} is too large")]
     ValueTooLarge {
         setting: &'static str,
         source: TryFromIntError,
     },
-}
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Duplicate { setting } => write!(f, "Duplicate {setting}"),
-            Self::Unknown { setting } => write!(f, "Unknown {setting}"),
-            Self::ArgumentsNotAllowed { setting } => write!(f, "{setting} cannot have arguments"),
-            Self::ChildBlockRequired { setting } => write!(f, "{setting} requires a child block"),
-            Self::ChildBlockNotAllowed { setting } => {
-                write!(f, "{setting} cannot have child blocks")
-            }
-            Self::ExpectedValue { setting, expected } => write!(f, "{setting} expects {expected}"),
-            Self::UnsupportedBindingProperty => {
-                f.write_str("Only a string do property is supported on bindings")
-            }
-            Self::UnknownBindingOperation { operation } => {
-                write!(f, "Unknown binding operation {operation}")
-            }
-            Self::ValueTooLarge { setting, .. } => write!(f, "{setting} is too large"),
-        }
-    }
-}
-impl Error for ValidationError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::ValueTooLarge { source, .. } => Some(source),
-            _ => None,
-        }
-    }
 }
