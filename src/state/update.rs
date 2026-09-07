@@ -31,7 +31,7 @@ impl Effects {
 
 impl State {
     /// Select a visible tree row without resetting an already selected diff.
-    pub(crate) fn select_tree_row(&mut self, index: usize) -> Effects {
+    pub(crate) fn select_tree_row(&mut self, index: usize, now: Instant) -> Effects {
         let Some(row) = self.tree.rows(false).get(index) else {
             return Effects::default();
         };
@@ -39,6 +39,9 @@ impl State {
         if changed {
             self.selection.clone_from(&row.path);
             self.diff.scroll = 0;
+        }
+        if !row.directory {
+            self.activity.visit(&self.selection, now);
         }
         self.focus = Scope::Tree;
         Effects::draw(changed)
@@ -126,9 +129,10 @@ impl State {
         let Some(result) = self.collection.finish(generation, result) else {
             return Effects::default();
         };
-        let Ok(snapshot) = result else {
+        let Ok(mut snapshot) = result else {
             return Effects::draw(false);
         };
+        self.activity.observe(snapshot.activity.take(), now);
         if self.collection.take_whitespace_notification()
             && self.snapshot.whitespace != snapshot.whitespace
         {
@@ -322,6 +326,27 @@ impl State {
                 self.help_scroll = 0;
             }
             _ => {}
+        }
+        let navigated_to_file = self.selection != selection
+            && matches!(
+                action,
+                Action::NextFile
+                    | Action::PreviousFile
+                    | Action::Up
+                    | Action::Down
+                    | Action::Left
+                    | Action::Right
+                    | Action::First
+                    | Action::Last
+            );
+        if (navigated_to_file || action == Action::Accept)
+            && self
+                .tree
+                .rows(false)
+                .iter()
+                .any(|row| row.path == self.selection && !row.directory)
+        {
+            self.activity.visit(&self.selection, now);
         }
         effects.render |= self.selection != selection;
         effects

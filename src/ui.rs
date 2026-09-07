@@ -127,6 +127,8 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
         needs_draw |= state.expire_toast(Instant::now()).redraw;
+        let activity_redraw = state.advance_activity(Instant::now()).redraw;
+        needs_draw |= activity_redraw && !monochrome && state.sidebar() && !state.help();
         if render_needed {
             needs_draw = true;
             render_worker.request(state.render_request(viewport.0, viewport.1))?;
@@ -150,11 +152,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                     state.help_scroll(),
                 );
                 if monochrome {
-                    // Suppressed color commands can reset text attributes in Crossterm.
-                    // Keep backend colors at their defaults so reverse-video selection survives.
-                    for cell in &mut frame.buffer_mut().content {
-                        cell.set_fg(Color::Reset).set_bg(Color::Reset);
-                    }
+                    suppress_colors(frame.buffer_mut());
                 }
             })?;
             needs_draw = false;
@@ -189,7 +187,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                 Instant::now(),
             ),
             Event::Mouse(mouse) if size.width >= 12 && size.height >= 6 => {
-                view.handle_mouse(&mut state, &config, &mut interaction, mouse)
+                view.handle_mouse(&mut state, &config, &mut interaction, mouse, Instant::now())
             }
             _ => Effects::default(),
         };
@@ -206,6 +204,14 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+fn suppress_colors(buffer: &mut ratatui::buffer::Buffer) {
+    // Suppressed color commands can reset text attributes in Crossterm.
+    // Keep backend colors at their defaults so reverse-video selection survives.
+    for cell in &mut buffer.content {
+        cell.set_fg(Color::Reset).set_bg(Color::Reset);
+    }
 }
 
 fn worker_update<T>(result: Result<T, mpsc::TryRecvError>, worker: &str) -> io::Result<Option<T>> {
@@ -248,6 +254,7 @@ impl ViewAreas {
         config: &Config,
         interaction: &mut Interaction,
         mouse: MouseEvent,
+        now: Instant,
     ) -> Effects {
         let mut redraw = interaction.selection.reconcile(state, self);
         if state.help() || state.prompt().is_some() {
@@ -284,7 +291,7 @@ impl ViewAreas {
         let mut effects = if self.tree.contains(position) {
             interaction
                 .tree
-                .handle_mouse(state, config, self.tree, mouse)
+                .handle_mouse(state, config, self.tree, mouse, now)
         } else {
             Effects::default()
         };

@@ -1,18 +1,25 @@
-use std::{collections::BTreeSet, ffi::OsString, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use crate::config::Whitespace;
-use crate::model::{Category, Change, Hunk, LineKind, LineStats, Snapshot, SourceLine};
+use crate::model::{
+    ActivityObservation, ActivityObservations, Category, Change, GitIdentity, Hunk, LineKind,
+    LineStats, Snapshot, SourceLine,
+};
 
 use super::{
     Collector, GitError, Limits, Mode,
-    patch::{RawPatch, parse_raw_patch},
-    path_from_bytes,
+    patch::{RawPatch, parse_raw_patch, parse_raw_records},
     source::{self, Entry, TextSource},
 };
 
 struct TrackedChanges {
     changes: Vec<Change>,
-    exact_paths: BTreeSet<PathBuf>,
+    identities: BTreeMap<PathBuf, GitIdentity>,
     stats: LineStats,
 }
 
@@ -53,14 +60,22 @@ impl Collector {
                     whitespace,
                 )?;
                 result.changes = tracked.changes;
-                exact_paths.extend(tracked.exact_paths);
+                exact_paths.extend(tracked.identities.into_keys());
                 stats = tracked.stats;
             }
             Mode::Watch => {
                 let status = self.status()?;
+                let mut observations = ActivityObservations::new();
                 result.branch = status.branch;
                 let conflicts = status.conflicts;
                 for path in status.untracked {
+                    observations.entry(path.clone()).or_default().insert(
+                        Category::Untracked,
+                        observation(GitIdentity {
+                            status: '?',
+                            ..GitIdentity::default()
+                        }),
+                    );
                     result.changes.push(self.worktree_file(
                         path,
                         Category::Untracked,
@@ -69,6 +84,18 @@ impl Collector {
                     )?);
                 }
                 for path in &conflicts {
+                    observations.entry(path.clone()).or_default().insert(
+                        Category::Unstaged,
+                        observation(GitIdentity {
+                            status: 'U',
+                            conflict_stages: status
+                                .conflict_stages
+                                .get(path)
+                                .cloned()
+                                .unwrap_or_default(),
+                            ..GitIdentity::default()
+                        }),
+                    );
                     result.changes.push(self.worktree_file(
                         path.clone(),
                         Category::Unstaged,
@@ -83,11 +110,36 @@ impl Collector {
                     let tracked =
                         self.tracked(category, extra, limits, loaded, &conflicts, whitespace)?;
                     result.changes.extend(tracked.changes);
-                    exact_paths.extend(tracked.exact_paths);
+                    exact_paths.extend(tracked.identities.keys().cloned());
+                    for (path, identity) in tracked.identities {
+                        observations
+                            .entry(path)
+                            .or_default()
+                            .insert(category, observation(identity));
+                    }
                     stats = stats.checked_add(tracked.stats).ok_or_else(|| {
                         GitError::InvalidOutput("Git line statistics overflow".into())
                     })?;
                 }
+                // Metadata also covers paths hidden by whitespace. Sources remain
+                // optional evidence, so loading/revealing a preview isn't an edit.
+                for (path, categories) in &mut observations {
+                    for (category, observation) in categories {
+                        if matches!(category, Category::Unstaged | Category::Untracked) {
+                            observation.metadata =
+                                source::activity_metadata(&self.paths.root.join(path));
+                        }
+                    }
+                }
+                for change in &result.changes {
+                    if let Some(observation) = observations
+                        .get_mut(&change.path)
+                        .and_then(|categories| categories.get_mut(&change.category))
+                    {
+                        observation.source = change.new_source.as_ref().map(Arc::clone);
+                    }
+                }
+                result.activity = Some(observations);
             }
         }
         for change in &result.changes {
@@ -108,20 +160,24 @@ impl Collector {
         conflicts: &[PathBuf],
         whitespace: Whitespace,
     ) -> Result<TrackedChanges, GitError> {
-        let exact_paths = if whitespace == Whitespace::Exact {
-            BTreeSet::new()
+        let exact_records = if whitespace == Whitespace::Exact {
+            None
         } else {
-            self.paths
-                .run(diff_args(extra, conflicts, Whitespace::Exact, true))?
-                .split(|byte| *byte == 0)
-                .filter(|path| !path.is_empty())
-                .map(path_from_bytes)
-                .collect()
+            let output = self
+                .paths
+                .run(diff_args(extra, conflicts, Whitespace::Exact, true))?;
+            Some(parse_raw_records(&mut output.as_slice())?)
         };
         let output = self
             .paths
             .run(diff_args(extra, conflicts, whitespace, false))?;
         let (records, stats) = parse_raw_patch(&output)?;
+        let identities = exact_records
+            .as_deref()
+            .unwrap_or(&records)
+            .iter()
+            .map(|record| (record.path.clone(), record_identity(record, category)))
+            .collect();
         let changes = records
             .into_iter()
             .map(|record| {
@@ -131,7 +187,7 @@ impl Collector {
             .collect::<Result<_, _>>()?;
         Ok(TrackedChanges {
             changes,
-            exact_paths,
+            identities,
             stats,
         })
     }
@@ -293,6 +349,29 @@ impl Collector {
     }
 }
 
+fn observation(git: GitIdentity) -> ActivityObservation {
+    ActivityObservation {
+        git,
+        metadata: None,
+        source: None,
+    }
+}
+
+fn record_identity(record: &RawPatch, category: Category) -> GitIdentity {
+    GitIdentity {
+        status: record.status,
+        old_path: record.old_path.clone(),
+        old_mode: record.old_mode.clone(),
+        new_mode: record.new_mode.clone(),
+        old_oid: record.old_oid.clone(),
+        // Git may fill this OID while generating an ignored-whitespace patch,
+        // but leave it zero in the exact raw output for the very same worktree.
+        new_oid: (category != Category::Unstaged || record.is_submodule())
+            .then(|| record.new_oid.clone()),
+        conflict_stages: Vec::new(),
+    }
+}
+
 struct SourceSizes {
     old: u64,
     new: Option<u64>,
@@ -344,7 +423,7 @@ fn diff_args(
     extra: &[&str],
     conflicts: &[PathBuf],
     whitespace: Whitespace,
-    names_only: bool,
+    raw_only: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "-c",
@@ -372,8 +451,8 @@ fn diff_args(
     .map(OsString::from)
     .collect();
     args.extend(
-        if names_only {
-            &["--name-only"][..]
+        if raw_only {
+            &["--raw"][..]
         } else {
             &["--raw", "--numstat", "--patch"][..]
         }

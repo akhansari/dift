@@ -92,18 +92,18 @@ fn take_nul<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], GitError> {
     Ok(value)
 }
 
-pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<(Vec<RawPatch>, LineStats), GitError> {
+pub(super) fn parse_raw_records(input: &mut &[u8]) -> Result<Vec<RawPatch>, GitError> {
     let mut records = Vec::new();
     while input.first() == Some(&b':') {
-        let header = String::from_utf8_lossy(take_nul(&mut input)?);
+        let header = String::from_utf8_lossy(take_nul(input)?);
         let fields: Vec<_> = header.trim_start_matches(':').split(' ').collect();
         if fields.len() != 5 {
             return Err(GitError::InvalidOutput("Invalid Git raw header".into()));
         }
         let status = fields[4].chars().next().unwrap_or('M');
-        let first_path = path_from_bytes(take_nul(&mut input)?);
+        let first_path = path_from_bytes(take_nul(input)?);
         let (path, old_path) = if matches!(status, 'R' | 'C') {
-            (path_from_bytes(take_nul(&mut input)?), Some(first_path))
+            (path_from_bytes(take_nul(input)?), Some(first_path))
         } else {
             (first_path, None)
         };
@@ -118,6 +118,11 @@ pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<(Vec<RawPatch>, LineSt
             patch: String::new(),
         });
     }
+    Ok(records)
+}
+
+pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<(Vec<RawPatch>, LineStats), GitError> {
+    let mut records = parse_raw_records(&mut input)?;
     // Git emits raw records, matching numstat records, then a NUL and patch text.
     let stats = records
         .iter()

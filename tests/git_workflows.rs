@@ -11,6 +11,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "git_workflows/activity.rs"]
+mod activity;
 #[path = "git_workflows/stats.rs"]
 mod stats;
 #[path = "git_workflows/whitespace.rs"]

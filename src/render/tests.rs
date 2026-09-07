@@ -6,6 +6,7 @@ mod refinement;
 
 fn snapshot() -> Snapshot {
     Snapshot {
+        activity: None,
         branch: "main".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,

@@ -84,6 +84,7 @@ impl Viewport {
         config: &Config,
         area: Rect,
         mouse: MouseEvent,
+        now: Instant,
     ) -> Effects {
         let inner = content_area(area);
         if !state.sidebar()
@@ -128,7 +129,7 @@ impl Viewport {
                 let effects = if toggle {
                     state.toggle_tree_directory(index)
                 } else {
-                    state.select_tree_row(index)
+                    state.select_tree_row(index, now)
                 };
                 // A click operates on the viewport the user is looking at.
                 state.selection().clone_into(&mut self.selection);
@@ -215,6 +216,35 @@ pub(super) fn draw(
         ))
         .highlight_style(Style::default().bg(selected_background));
     frame.render_stateful_widget(list, inner, &mut list_state);
+    // Apply after List's selected-row styling so external edits remain visible
+    // on the selected file. Foregrounds, badges, and the focus marker survive.
+    for (index, row) in rows
+        .iter()
+        .skip(viewport.offset)
+        .take(inner.height as usize)
+        .enumerate()
+    {
+        let intensity = state.activity_intensity(&row.path, row.directory);
+        if intensity > 0.0 {
+            let background = if row.path == state.selection() {
+                selected_background
+            } else if config.light {
+                Color::Rgb(255, 255, 255)
+            } else {
+                Color::Rgb(20, 23, 30)
+            };
+            let amber = if config.light {
+                Color::Rgb(248, 228, 190)
+            } else {
+                Color::Rgb(65, 49, 27)
+            };
+            let color = blend(background, amber, intensity);
+            let y = inner.y + index as u16;
+            for x in inner.x..inner.right() {
+                frame.buffer_mut()[(x, y)].set_bg(color);
+            }
+        }
+    }
     if count == 0 && inner.height > 1 {
         frame.render_widget(
             Paragraph::new(if state.filter().is_empty() {
@@ -256,6 +286,18 @@ pub(super) fn draw(
         );
     }
     !scrollbar_visible
+}
+
+fn blend(background: Color, tint: Color, intensity: f32) -> Color {
+    match (background, tint) {
+        (Color::Rgb(r, g, b), Color::Rgb(tr, tg, tb)) => {
+            let channel = |base: u8, target: u8| {
+                (f32::from(base) + (f32::from(target) - f32::from(base)) * intensity).round() as u8
+            };
+            Color::Rgb(channel(r, tr), channel(g, tg), channel(b, tb))
+        }
+        _ => background,
+    }
 }
 
 /// Shared cell measurements keep folder hit targets aligned with rendered glyphs.

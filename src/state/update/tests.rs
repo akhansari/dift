@@ -5,6 +5,7 @@ use crate::{
     render::{Anchor, Document, Hit, Row},
 };
 use ratatui::text::Line;
+mod activity;
 mod toasts;
 
 #[test]
@@ -223,6 +224,7 @@ fn switching_whitespace_modes_preserves_scroll_anchors_for_the_first_preview() {
     let collection = state.collection_request();
     let snapshot = Snapshot {
         changes: state.snapshot().changes.clone(),
+        activity: None,
         branch: "main".into(),
         whitespace: Whitespace::IgnoreChanges,
         whitespace_hidden_files: 0,
@@ -281,6 +283,7 @@ fn document(lines: &[&str], partial: bool) -> Arc<Document> {
 fn reading_state() -> (State, u64) {
     let mut state = State::new(false);
     state.update_snapshot(Snapshot {
+        activity: None,
         changes: ["different.txt", "file.txt"]
             .into_iter()
             .map(|path| Change {

@@ -116,6 +116,7 @@ impl Viewer {
                 row: point.y,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         self.draw()?;
         Ok(effects)

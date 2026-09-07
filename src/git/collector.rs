@@ -1,4 +1,5 @@
 use super::{GitError, Repository, path_from_bytes};
+use crate::model::IndexStage;
 use gix::bstr::ByteSlice;
 use std::{
     borrow::Cow,
@@ -78,6 +79,7 @@ impl Tracking {
 pub(super) struct Status {
     pub branch: String,
     pub conflicts: Vec<PathBuf>,
+    pub conflict_stages: BTreeMap<PathBuf, Vec<IndexStage>>,
     pub untracked: Vec<PathBuf>,
 }
 
@@ -282,10 +284,19 @@ impl Collector {
                 .unwrap_or(false),
         );
         let mut conflicts = BTreeSet::new();
+        let mut conflict_stages: BTreeMap<PathBuf, Vec<IndexStage>> = BTreeMap::new();
         for entry in index.entries() {
             let path = path_from_bytes(entry.path(&index));
             if entry.stage() != gix::index::entry::Stage::Unconflicted {
                 conflicts.insert(path.clone());
+                conflict_stages
+                    .entry(path.clone())
+                    .or_default()
+                    .push(IndexStage {
+                        stage: entry.stage() as u32,
+                        mode: entry.mode.bits(),
+                        oid: entry.id.to_string(),
+                    });
             }
             tracking.insert(path, entry.mode == gix::index::entry::Mode::COMMIT);
         }
@@ -318,6 +329,7 @@ impl Collector {
         Ok(Status {
             branch,
             conflicts: conflicts.into_iter().collect(),
+            conflict_stages,
             untracked,
         })
     }
@@ -336,6 +348,7 @@ impl Collector {
         let mut result = Status {
             branch: String::new(),
             conflicts: Vec::new(),
+            conflict_stages: BTreeMap::new(),
             untracked: Vec::new(),
         };
         let mut records = status.split(|b| *b == 0);
@@ -367,6 +380,27 @@ impl Collector {
                 return Err(GitError::InvalidOutput("Invalid index listing".into()));
             };
             let path = path_from_bytes(&entry[tab + 1..]);
+            let header = std::str::from_utf8(&entry[..tab])
+                .map_err(|e| GitError::access("Read index entry", e))?;
+            let fields: Vec<_> = header.split(' ').collect();
+            let [mode, oid, stage] = fields.as_slice() else {
+                return Err(GitError::InvalidOutput("Invalid index listing".into()));
+            };
+            let stage: u32 = stage
+                .parse()
+                .map_err(|e| GitError::access("Read index stage", e))?;
+            if stage != 0 {
+                result
+                    .conflict_stages
+                    .entry(path.clone())
+                    .or_default()
+                    .push(IndexStage {
+                        stage,
+                        mode: u32::from_str_radix(mode, 8)
+                            .map_err(|e| GitError::access("Read index mode", e))?,
+                        oid: (*oid).to_owned(),
+                    });
+            }
             tracking.insert(path, entry.starts_with(b"160000 "));
         }
         self.tracking = Some(tracking);

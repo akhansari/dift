@@ -66,6 +66,7 @@ impl MouseTree {
                 row,
                 modifiers: KeyModifiers::NONE,
             },
+            Instant::now(),
         );
         self.draw()?;
         Ok(effects)

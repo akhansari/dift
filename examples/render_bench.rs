@@ -52,6 +52,7 @@ fn fixture(lines: usize, last: &str, dense: bool) -> Snapshot {
         )
         .collect();
     Snapshot {
+        activity: None,
         branch: "benchmark".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,

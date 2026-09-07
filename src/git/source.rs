@@ -5,6 +5,25 @@ use std::{
 };
 
 use super::GitError;
+use crate::model::WorktreeMetadata;
+
+pub(super) fn activity_metadata(path: &Path) -> Option<WorktreeMetadata> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Some(WorktreeMetadata::Present {
+            regular: metadata.is_file(),
+            symlink: metadata.is_symlink(),
+            bytes: metadata.len(),
+            modified: metadata.modified().ok(),
+            readonly: metadata.permissions().readonly(),
+            link_target: metadata
+                .is_symlink()
+                .then(|| fs::read_link(path).ok())
+                .flatten(),
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Some(WorktreeMetadata::Missing),
+        Err(_) => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Entry {

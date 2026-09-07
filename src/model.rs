@@ -1,6 +1,11 @@
 use crate::config::Whitespace;
 use std::{path::PathBuf, sync::Arc};
 
+mod activity;
+pub use activity::{
+    ActivityObservation, ActivityObservations, GitIdentity, IndexStage, WorktreeMetadata,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Category {
     Unstaged,
@@ -96,6 +101,9 @@ impl LineStats {
 /// Collected repository changes and their display label.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
+    /// Presentation-independent observations, populated only in watch mode.
+    /// The UI consumes these before sharing the display snapshot with its renderer.
+    pub activity: Option<ActivityObservations>,
     /// File changes collected for the active mode.
     pub changes: Vec<Change>,
     /// Branch name or revision comparison label.

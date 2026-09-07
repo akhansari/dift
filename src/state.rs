@@ -1,3 +1,4 @@
+mod activity;
 mod collection;
 mod diff;
 mod tree;
@@ -64,6 +65,7 @@ impl Prompt {
 
 /// Repository data and interactive state for the terminal UI.
 pub struct State {
+    activity: activity::ActivityState,
     collection: CollectionState,
     diff: DiffState,
     tree: TreeIndex,
@@ -164,6 +166,7 @@ impl State {
         let collapsed = BTreeSet::new();
         let tree = TreeIndex::new(&snapshot, "", &collapsed);
         Self {
+            activity: activity::ActivityState::default(),
             diff: DiffState::new(split),
             collection: CollectionState::new(whitespace),
             tree,
@@ -192,6 +195,19 @@ impl State {
         self.tree = TreeIndex::new(&snapshot, &self.filter, &self.collapsed);
         self.snapshot = Arc::new(snapshot);
         self.reconcile_selection();
+    }
+
+    /// Activity changes only the tree's appearance, never the rendered diff.
+    pub fn advance_activity(&mut self, now: Instant) -> Effects {
+        Effects {
+            redraw: self.activity.advance(now),
+            ..Effects::default()
+        }
+    }
+
+    pub fn activity_intensity(&self, path: &Path, directory: bool) -> f32 {
+        self.activity
+            .intensity(path, directory, self.matching_paths())
     }
 
     pub fn visible_files(&self) -> usize {
@@ -431,6 +447,7 @@ mod tests {
 
     fn snapshot_with(files: &[(&str, Category)]) -> Snapshot {
         Snapshot {
+            activity: None,
             branch: "main".into(),
             whitespace: Default::default(),
             whitespace_hidden_files: 0,

@@ -9,6 +9,7 @@ use std::{hint::black_box, time::Instant};
 
 fn fixture(files: usize, nested: bool) -> Snapshot {
     Snapshot {
+        activity: None,
         branch: "benchmark".into(),
         whitespace: Default::default(),
         whitespace_hidden_files: 0,

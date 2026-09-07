@@ -23,6 +23,7 @@ fn wheel(state: &mut State, kind: MouseEventKind, column: u16, row: u16) -> Effe
         &Config::default(),
         &mut Interaction::default(),
         mouse(kind, column, row),
+        Instant::now(),
     )
 }
 
@@ -228,6 +229,7 @@ fn wheel_over_tree_scrolls_only_tree_even_when_diff_has_focus() -> AppResult<()>
         &config,
         &mut viewport,
         mouse(MouseEventKind::ScrollDown, 10, 1),
+        Instant::now(),
     );
     let mut terminal = Terminal::new(TestBackend::new(90, 6))?;
     terminal.draw(|frame| {

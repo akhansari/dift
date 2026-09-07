@@ -4,6 +4,7 @@ use crate::{
     model::{Category, Change, Snapshot},
 };
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+mod activity;
 mod mouse;
 
 fn state_with(files: &[(&str, Category)]) -> State {
