@@ -4,6 +4,19 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+/// Escape terminal control characters while preserving printable Unicode.
+pub(crate) fn escape_controls(chars: impl IntoIterator<Item = char>) -> String {
+    let mut text = String::new();
+    for ch in chars {
+        if ch.is_control() {
+            text.extend(ch.escape_default());
+        } else {
+            text.push(ch);
+        }
+    }
+    text
+}
+
 /// Fit a name without splitting graphemes, keeping the extension where possible.
 /// Match indices remain relative to the original name after middle truncation.
 pub(crate) fn name_spans<'a>(

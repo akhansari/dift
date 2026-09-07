@@ -1,8 +1,13 @@
+mod collection;
+mod diff;
 mod tree;
+mod update;
+
+pub use collection::CollectionRequest;
+use collection::CollectionState;
+use diff::DiffState;
 use tree::TreeIndex;
 pub use tree::TreeRow;
-mod update;
-use update::Displayed;
 pub use update::Effects;
 
 use crate::{
@@ -24,14 +29,6 @@ const TOAST_DURATION: Duration = Duration::from_secs(3);
 struct Toast {
     message: String,
     expires_at: Instant,
-}
-
-/// Inputs for an explicit collection request; watch refreshes reuse the latest request.
-#[derive(Debug, Default)]
-pub struct CollectionRequest {
-    pub generation: u64,
-    pub loaded: BTreeSet<PathBuf>,
-    pub whitespace: Whitespace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +64,9 @@ impl Prompt {
 
 /// Repository data and interactive state for the terminal UI.
 pub struct State {
+    collection: CollectionState,
+    diff: DiffState,
     tree: TreeIndex,
-    displayed: Displayed,
     help_scroll: usize,
     /// Most recently collected repository changes.
     snapshot: Arc<Snapshot>,
@@ -80,45 +78,17 @@ pub struct State {
     unfiltered_collapsed: Option<BTreeSet<PathBuf>>,
     /// Applied fuzzy query used to filter file paths; draft text lives in the prompt.
     filter: String,
-    /// Query used to find matches in the diff.
-    search: String,
     /// Active filter or search prompt, if any.
     prompt: Option<Prompt>,
     /// Input scope currently receiving keyboard actions.
     focus: Scope,
     /// Whether the file sidebar is visible.
     sidebar: bool,
-    /// Whether the diff uses a side-by-side layout.
-    split: bool,
     /// Whether the help overlay is visible.
     help: bool,
-    /// Zero-based document row at the top of the diff viewport.
-    scroll: usize,
-    /// Rendered diff currently displayed.
-    document: Arc<Document>,
-    /// Source anchors retained while a new comparison mode awaits its first preview.
-    transition_document: Option<Arc<Document>>,
-    /// Paths explicitly allowed to load beyond size limits.
-    loaded: BTreeSet<PathBuf>,
-    /// Latest render request identifier used to reject stale results.
-    generation: u64,
-    /// Most recent repository collection error, if any.
-    error: Option<String>,
     /// Latest setting notification, removed when its deadline passes.
     toast: Option<Toast>,
-    /// Whether a user toggle is awaiting a successful whitespace comparison.
-    whitespace_toast_pending: bool,
-    /// Whether a repository scan is in progress.
-    collecting: bool,
-    /// Whether the latest render request is still in progress.
-    rendering: bool,
-    /// Latest explicit collection generation and requested whitespace policy.
-    collection_generation: u64,
-    whitespace: Whitespace,
-    ignore_whitespace: Whitespace,
     visible_files: usize,
-    /// Index of the active search hit in the document.
-    match_index: Option<usize>,
 }
 
 impl State {
@@ -135,25 +105,25 @@ impl State {
         &self.filter
     }
     pub fn search(&self) -> &str {
-        &self.search
+        &self.diff.search
     }
     pub fn prompt(&self) -> Option<&Prompt> {
         self.prompt.as_ref()
     }
     pub fn document(&self) -> &Document {
-        &self.document
+        &self.diff.document
     }
     pub(crate) fn shared_document(&self) -> &Arc<Document> {
-        &self.document
+        &self.diff.document
     }
     pub(crate) fn focus_diff(&mut self) {
         self.focus = Scope::Diff;
     }
     pub fn loaded(&self) -> &BTreeSet<PathBuf> {
-        &self.loaded
+        &self.collection.loaded
     }
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.collection.error.as_deref()
     }
     pub fn toast(&self) -> Option<&str> {
         self.toast.as_ref().map(|toast| toast.message.as_str())
@@ -168,22 +138,22 @@ impl State {
         self.sidebar
     }
     pub fn split(&self) -> bool {
-        self.split
+        self.diff.split
     }
     pub fn help(&self) -> bool {
         self.help
     }
     pub fn scroll(&self) -> usize {
-        self.scroll
+        self.diff.scroll
     }
     pub fn collecting(&self) -> bool {
-        self.collecting
+        self.collection.collecting
     }
     pub fn rendering(&self) -> bool {
-        self.rendering
+        self.diff.rendering
     }
     pub fn match_index(&self) -> Option<usize> {
-        self.match_index
+        self.diff.match_index
     }
     pub fn new(split: bool) -> Self {
         Self::with_whitespace(split, Whitespace::Exact)
@@ -194,39 +164,21 @@ impl State {
         let collapsed = BTreeSet::new();
         let tree = TreeIndex::new(&snapshot, "", &collapsed);
         Self {
+            diff: DiffState::new(split),
+            collection: CollectionState::new(whitespace),
             tree,
-            displayed: Displayed::default(),
             help_scroll: 0,
             snapshot,
             selection: PathBuf::new(),
             collapsed,
             unfiltered_collapsed: None,
             filter: String::new(),
-            search: String::new(),
             prompt: None,
             focus: Scope::Tree,
             sidebar: true,
-            split,
             help: false,
-            scroll: 0,
-            document: Arc::new(Document::default()),
-            transition_document: None,
-            loaded: BTreeSet::new(),
-            generation: 0,
-            error: None,
             toast: None,
-            whitespace_toast_pending: false,
-            collecting: false,
-            rendering: false,
-            collection_generation: 0,
-            whitespace,
-            ignore_whitespace: if whitespace == Whitespace::Exact {
-                Whitespace::IgnoreChanges
-            } else {
-                whitespace
-            },
             visible_files: 0,
-            match_index: None,
         }
     }
 
@@ -247,18 +199,11 @@ impl State {
     }
 
     pub fn requested_whitespace(&self) -> Whitespace {
-        self.whitespace
+        self.collection.whitespace
     }
 
     pub fn collection_request(&mut self) -> CollectionRequest {
-        self.collection_generation += 1;
-        self.collecting = true;
-        self.error = None;
-        CollectionRequest {
-            generation: self.collection_generation,
-            loaded: self.loaded.clone(),
-            whitespace: self.whitespace,
-        }
+        self.collection.request()
     }
 
     fn reconcile_selection(&mut self) {
@@ -274,7 +219,7 @@ impl State {
             }
         }
         if self.selection != previous {
-            self.scroll = 0;
+            self.diff.scroll = 0;
         }
     }
 
@@ -328,7 +273,7 @@ impl State {
             for ancestor in row.path.ancestors().skip(1) {
                 revealed |= self.collapsed.remove(ancestor);
             }
-            self.scroll = 0;
+            self.diff.scroll = 0;
             if revealed {
                 self.tree.reveal(&self.collapsed);
             }
@@ -348,7 +293,7 @@ impl State {
         };
         if let Some(row) = rows.get(next) {
             self.selection.clone_from(&row.path);
-            self.scroll = 0;
+            self.diff.scroll = 0;
         }
     }
 
@@ -361,7 +306,7 @@ impl State {
             self.collapsed.insert(self.selection.clone());
             self.tree.reveal(&self.collapsed);
         } else if self.selection.pop() {
-            self.scroll = 0;
+            self.diff.scroll = 0;
         }
     }
 
@@ -378,7 +323,7 @@ impl State {
             !row.path.as_os_str().is_empty() && row.path.parent() == Some(&self.selection)
         }) {
             self.selection.clone_from(&child.path);
-            self.scroll = 0;
+            self.diff.scroll = 0;
         }
     }
 
@@ -386,7 +331,7 @@ impl State {
         let text = if kind == PromptKind::Filter {
             &self.filter
         } else {
-            &self.search
+            &self.diff.search
         };
         self.prompt = Some(Prompt {
             kind,
@@ -415,7 +360,7 @@ impl State {
         if let Some(prompt) = &self.prompt {
             let query = match prompt.kind {
                 PromptKind::Filter => &mut self.filter,
-                PromptKind::Search => &mut self.search,
+                PromptKind::Search => &mut self.diff.search,
             };
             changed = query != prompt.editor.text();
             if changed {
@@ -442,8 +387,8 @@ impl State {
                 self.tree.refilter(&self.filter, &self.collapsed);
                 self.selection = prompt.previous_selection;
             } else {
-                changed = self.search != prompt.previous;
-                self.search = prompt.previous;
+                changed = self.diff.search != prompt.previous;
+                self.diff.search = prompt.previous;
             }
         }
         let selection = self.selection.clone();
@@ -452,35 +397,11 @@ impl State {
     }
 
     pub fn scroll_by(&mut self, amount: usize, down: bool, height: usize) {
-        self.scroll = if down {
-            self.scroll.saturating_add(amount)
-        } else {
-            self.scroll.saturating_sub(amount)
-        }
-        .min(self.document.rows.len().saturating_sub(height));
+        self.diff.scroll_by(amount, down, height);
     }
 
     pub fn jump_match(&mut self, forward: bool, height: usize) {
-        let hits = &self.document.hits;
-        if hits.is_empty() {
-            return;
-        }
-        let index = match self.match_index {
-            Some(i) if forward => (i + 1) % hits.len(),
-            Some(i) => (i + hits.len() - 1) % hits.len(),
-            None if forward => hits.iter().position(|h| h.row >= self.scroll).unwrap_or(0),
-            None => hits
-                .iter()
-                .rposition(|h| h.row < self.scroll)
-                .unwrap_or(hits.len() - 1),
-        };
-        self.match_index = Some(index);
-        let context =
-            (height / 3).max(crate::render::FILE_HEADER_ROWS.min(height.saturating_sub(1)));
-        self.scroll = hits[index]
-            .row
-            .saturating_sub(context)
-            .min(self.document.rows.len().saturating_sub(height));
+        self.diff.jump_match(forward, height);
     }
 
     fn input_action(&mut self, action: Action, now: Instant) -> bool {

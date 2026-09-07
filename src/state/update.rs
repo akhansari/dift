@@ -1,6 +1,5 @@
 use super::{PromptKind, State, TOAST_DURATION, Toast};
 use crate::{
-    config::Whitespace,
     git::GitError,
     input::{Action, Bindings, Scope},
     model::Snapshot,
@@ -8,7 +7,6 @@ use crate::{
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{
-    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -31,13 +29,6 @@ impl Effects {
     }
 }
 
-#[derive(Default)]
-pub(super) struct Displayed {
-    selection: PathBuf,
-    query: String,
-    pending_search_jump: bool,
-}
-
 impl State {
     /// Select a visible tree row without resetting an already selected diff.
     pub(crate) fn select_tree_row(&mut self, index: usize) -> Effects {
@@ -47,7 +38,7 @@ impl State {
         let changed = self.selection != row.path;
         if changed {
             self.selection.clone_from(&row.path);
-            self.scroll = 0;
+            self.diff.scroll = 0;
         }
         self.focus = Scope::Tree;
         Effects::draw(changed)
@@ -123,9 +114,7 @@ impl State {
     }
 
     pub fn collection_started(&mut self, generation: u64) {
-        if generation == self.collection_generation {
-            self.collecting = true;
-        }
+        self.collection.started(generation);
     }
 
     pub fn collection_finished(
@@ -134,112 +123,47 @@ impl State {
         result: Result<Snapshot, GitError>,
         now: Instant,
     ) -> Effects {
-        if generation != self.collection_generation {
+        let Some(result) = self.collection.finish(generation, result) else {
             return Effects::default();
+        };
+        let Ok(snapshot) = result else {
+            return Effects::draw(false);
+        };
+        if self.collection.take_whitespace_notification()
+            && self.snapshot.whitespace != snapshot.whitespace
+        {
+            self.show_toast(
+                format!(
+                    "Whitespace: {} · {} hidden by whitespace",
+                    snapshot.whitespace.name(),
+                    snapshot.whitespace_hidden_files,
+                ),
+                now,
+            );
         }
-        self.collecting = false;
-        let mut render = false;
-        match result {
-            Ok(snapshot) => {
-                if self.whitespace_toast_pending && self.snapshot.whitespace != snapshot.whitespace
-                {
-                    self.show_toast(
-                        format!(
-                            "Whitespace: {} · {} hidden by whitespace",
-                            snapshot.whitespace.name(),
-                            snapshot.whitespace_hidden_files,
-                        ),
-                        now,
-                    );
-                }
-                self.whitespace_toast_pending = false;
-                render = self.snapshot.as_ref() != &snapshot;
-                if render {
-                    if self.snapshot.whitespace != snapshot.whitespace {
-                        // Do not label the old diff with the newly applied mode. Keep
-                        // its anchors until the first matching preview can reanchor.
-                        if self.transition_document.is_none() {
-                            self.transition_document = Some(Arc::clone(&self.document));
-                        }
-                        self.document = Arc::new(crate::render::Document::default());
-                        self.match_index = None;
-                    }
-                    // Prevent a render from the previous snapshot being accepted while
-                    // the terminal loop arranges the new render request.
-                    self.generation += 1;
-                    self.update_snapshot(snapshot);
-                }
-                self.error = None;
-            }
-            Err(error) => self.error = Some(error.to_string()),
+        let render = self.snapshot.as_ref() != &snapshot;
+        if render {
+            self.diff
+                .invalidate(self.snapshot.whitespace != snapshot.whitespace);
+            self.update_snapshot(snapshot);
         }
         Effects::draw(render)
     }
 
     pub fn render_request(&mut self, width: usize, height: usize) -> RenderRequest {
-        self.generation += 1;
-        self.rendering = true;
-        self.displayed.pending_search_jump |=
-            self.displayed.query != self.search && !self.search.is_empty();
-        RenderRequest {
-            generation: self.generation,
-            snapshot: Arc::clone(&self.snapshot),
-            selected: self.selected_changes(),
+        self.diff.request(
+            Arc::clone(&self.snapshot),
+            self.selected_changes(),
+            &self.selection,
             width,
-            split: self.split,
-            query: self.search.clone(),
-            // A prefix preview cannot preserve an anchor beyond that prefix.
-            preview_rows: if self.displayed.selection == self.selection && self.scroll > 0 {
-                0
-            } else {
-                height.saturating_mul(2).max(16)
-            },
-        }
+            height,
+        )
     }
 
     pub fn apply_render(&mut self, result: RenderResult, height: usize) -> bool {
-        if result.generation != self.generation
-            || (result.document.partial
-                && self.displayed.selection == self.selection
-                && self.scroll > 0)
-        {
-            // Scrolling can happen after requesting a prefix preview. Keep the
-            // current source position until a complete document is available.
-            return false;
-        }
-        self.scroll = if self.displayed.selection == self.selection {
-            result.document.reanchored_scroll(
-                self.transition_document.as_ref().unwrap_or(&self.document),
-                self.scroll,
-            )
-        } else {
-            0
-        }
-        .min(result.document.rows.len().saturating_sub(height));
-        self.document = result.document;
-        self.transition_document = None;
-        self.rendering = !result.finished;
-        if self.displayed.query != self.search || self.displayed.selection != self.selection {
-            self.match_index = None;
-        } else if let Some(index) = self.match_index {
-            self.match_index = (!self.document.hits.is_empty())
-                .then_some(index.min(self.document.hits.len().saturating_sub(1)));
-        }
-        if self.displayed.pending_search_jump
-            && !self.search.is_empty()
-            && !self.document.hits.is_empty()
-        {
-            self.match_index = None;
-            self.jump_match(true, height);
-            self.displayed.pending_search_jump = false;
-        }
-        if result.finished || self.search.is_empty() {
-            self.displayed.pending_search_jump = false;
-        }
-        self.displayed.selection.clone_from(&self.selection);
-        self.displayed.query.clone_from(&self.search);
-        true
+        self.diff.apply_render(result, height, &self.selection)
     }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -314,16 +238,11 @@ impl State {
                 effects.render = true;
             }
             Action::Layout => {
-                self.split = !self.split;
+                self.diff.split = !self.diff.split;
                 effects.render = true;
             }
             Action::Whitespace => {
-                self.whitespace = if self.whitespace == Whitespace::Exact {
-                    self.ignore_whitespace
-                } else {
-                    Whitespace::Exact
-                };
-                self.whitespace_toast_pending = true;
+                self.collection.toggle_whitespace();
                 effects.collect = true;
             }
             Action::Focus if self.sidebar => {
@@ -359,7 +278,7 @@ impl State {
                 if self.focus == Scope::Tree {
                     self.selection.clear();
                 } else {
-                    self.scroll = 0;
+                    self.diff.scroll = 0;
                 }
             }
             Action::Last => {
@@ -368,7 +287,7 @@ impl State {
                         self.selection.clone_from(&row.path);
                     }
                 } else {
-                    self.scroll = self.document.rows.len().saturating_sub(height);
+                    self.diff.scroll = self.diff.document.rows.len().saturating_sub(height);
                 }
             }
             Action::Filter => self.begin_prompt(PromptKind::Filter),
@@ -376,8 +295,8 @@ impl State {
             Action::NextMatch => self.jump_match(true, height),
             Action::PreviousMatch => self.jump_match(false, height),
             Action::Cancel => {
-                if !self.search.is_empty() {
-                    self.search.clear();
+                if !self.diff.search.is_empty() {
+                    self.diff.search.clear();
                 } else if !self.filter.is_empty() {
                     self.filter.clear();
                     self.refilter();
@@ -391,7 +310,7 @@ impl State {
                     .iter()
                     .any(|c| c.path == self.selection && c.oversized)
                 {
-                    self.loaded.insert(self.selection.clone());
+                    self.collection.loaded.insert(self.selection.clone());
                     effects.collect = true;
                 } else {
                     self.expand();

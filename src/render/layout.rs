@@ -2,16 +2,7 @@ use super::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(super) fn push_header(document: &mut Document, text: &str, style: Style) {
-    let text: String = text
-        .chars()
-        .flat_map(|ch| {
-            if ch.is_control() {
-                ch.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![ch]
-            }
-        })
-        .collect();
+    let text = crate::text::escape_controls(text.chars());
     document.rows.push(Arc::new(Row {
         line: Line::styled(text, style),
         anchors: Vec::new(),
@@ -91,17 +82,31 @@ impl<'a> ContextSource<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Inputs shared by every source row in one file layout.
+#[derive(Clone, Copy)]
+struct LayoutContext<'a> {
+    category: Category,
+    path: &'a Arc<PathBuf>,
+    width: usize,
+    query: &'a str,
+    palette: Palette,
+    cancel: &'a Cancellation,
+}
+
 fn cells(
-    change: &Change,
-    path: &Arc<PathBuf>,
+    context: &LayoutContext<'_>,
     spec: CellSpec<'_>,
     width: usize,
     unified: bool,
-    palette: Palette,
     limit: Option<usize>,
-    cancel: &Cancellation,
 ) -> Result<Vec<CellRow>, Cancelled> {
+    let LayoutContext {
+        category,
+        path,
+        palette,
+        cancel,
+        ..
+    } = *context;
     let Some(source) = spec.source else {
         return Ok(Vec::new());
     };
@@ -156,7 +161,7 @@ fn cells(
         )],
         anchor: Some(Anchor {
             path: Arc::clone(path),
-            category: change.category,
+            category,
             old: spec.old,
             number,
             byte,
@@ -267,24 +272,23 @@ fn cells(
     Ok(rows)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_unified(
+    context: &LayoutContext<'_>,
     document: &mut Document,
-    change: &Change,
-    path: &Arc<PathBuf>,
     source: &SourceLine,
     colors: &SyntaxColors,
     emphasis: &[Range<usize>],
-    query: &str,
-    width: usize,
-    palette: Palette,
     limit: Option<usize>,
-    cancel: &Cancellation,
 ) -> Result<(), Cancelled> {
+    let LayoutContext {
+        width,
+        query,
+        cancel,
+        ..
+    } = *context;
     let old = source.new.is_none();
     for row in cells(
-        change,
-        path,
+        context,
         CellSpec {
             source: Some(source),
             content: None,
@@ -295,9 +299,7 @@ fn append_unified(
         },
         width,
         true,
-        palette,
         limit,
-        cancel,
     )? {
         cancel.check()?;
         document.hits.extend(std::iter::repeat_n(
@@ -325,22 +327,23 @@ fn append_unified(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_split(
+    context: &LayoutContext<'_>,
     document: &mut Document,
-    change: &Change,
-    path: &Arc<PathBuf>,
     left: CellSpec<'_>,
     right: CellSpec<'_>,
-    width: usize,
-    palette: Palette,
     limit: Option<usize>,
-    cancel: &Cancellation,
 ) -> Result<(), Cancelled> {
+    let LayoutContext {
+        width,
+        palette,
+        cancel,
+        ..
+    } = *context;
     let a_width = (width - 1) / 2;
     let b_width = width - 1 - a_width;
-    let a = cells(change, path, left, a_width, false, palette, limit, cancel)?;
-    let b = cells(change, path, right, b_width, false, palette, limit, cancel)?;
+    let a = cells(context, left, a_width, false, limit)?;
+    let b = cells(context, right, b_width, false, limit)?;
     let count = a.len().max(b.len());
     let mut a = a.into_iter();
     let mut b = b.into_iter();
@@ -355,7 +358,7 @@ fn append_split(
                 code.push(CodeRegion {
                     columns: row.code_start..row.width,
                     anchor: anchors.len(),
-                    side: Some(true),
+                    side: Some(DiffSide::Old),
                     source: row.source,
                 });
             }
@@ -371,7 +374,7 @@ fn append_split(
                 code.push(CodeRegion {
                     columns: a_width + 1 + row.code_start..a_width + 1 + row.width,
                     anchor: anchors.len(),
-                    side: Some(false),
+                    side: Some(DiffSide::New),
                     source: row
                         .source
                         .into_iter()
@@ -421,6 +424,14 @@ pub(super) fn file(
     let palette = Palette::new(config.light);
     let mut document = Document::default();
     let path = Arc::new(change.path.clone());
+    let context = LayoutContext {
+        category: change.category,
+        path: &path,
+        width,
+        query,
+        palette,
+        cancel,
+    };
     document.rows.push(Arc::new(Row {
         line: header::line(change, width, palette),
         anchors: Vec::new(),
@@ -496,17 +507,7 @@ pub(super) fn file(
                             query,
                         };
                         let remaining = limit.map(|n| n.saturating_sub(document.rows.len()));
-                        append_split(
-                            &mut document,
-                            change,
-                            &path,
-                            left,
-                            right,
-                            width,
-                            palette,
-                            remaining,
-                            cancel,
-                        )?;
+                        append_split(&context, &mut document, left, right, remaining)?;
                     }
                 } else {
                     for (index, line) in
@@ -522,19 +523,7 @@ pub(super) fn file(
                         };
                         let emphasis = block.emphasis.get(&index).map(Vec::as_slice).unwrap_or(&[]);
                         let remaining = limit.map(|n| n.saturating_sub(document.rows.len()));
-                        append_unified(
-                            &mut document,
-                            change,
-                            &path,
-                            line,
-                            colors,
-                            emphasis,
-                            query,
-                            width,
-                            palette,
-                            remaining,
-                            cancel,
-                        )?;
+                        append_unified(&context, &mut document, line, colors, emphasis, remaining)?;
                     }
                 }
                 position = block.end;
@@ -557,30 +546,15 @@ pub(super) fn file(
                         emphasis: &[],
                         query,
                     };
-                    append_split(
-                        &mut document,
-                        change,
-                        &path,
-                        left,
-                        right,
-                        width,
-                        palette,
-                        remaining,
-                        cancel,
-                    )?;
+                    append_split(&context, &mut document, left, right, remaining)?;
                 } else {
                     append_unified(
+                        &context,
                         &mut document,
-                        change,
-                        &path,
                         source,
                         &visuals.new,
                         &[],
-                        query,
-                        width,
-                        palette,
                         remaining,
-                        cancel,
                     )?;
                 }
                 position += 1;

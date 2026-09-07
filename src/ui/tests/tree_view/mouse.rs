@@ -92,18 +92,16 @@ impl MouseTree {
 
     fn scrolled_diff(&mut self) {
         let request = self.state.render_request(80, 4);
+        let row = Arc::new(Row {
+            line: Line::raw("diff content"),
+            anchors: Vec::new(),
+            code: Vec::new(),
+        });
         self.state.apply_render(
             RenderResult {
                 generation: request.generation,
                 document: Arc::new(Document {
-                    rows: vec![
-                        Arc::new(Row {
-                            line: Line::raw("diff content"),
-                            anchors: Vec::new(),
-                            code: Vec::new(),
-                        });
-                        20
-                    ],
+                    rows: vec![row; 20],
                     ..Document::default()
                 }),
                 finished: true,

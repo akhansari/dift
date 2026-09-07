@@ -1,6 +1,6 @@
 use super::ViewAreas;
 use crate::{
-    render::{CodeRegion, Document, Palette},
+    render::{CodeRegion, DiffSide, Document, Palette},
     state::State,
 };
 use ratatui::{
@@ -23,7 +23,7 @@ struct Drag {
     selected_path: PathBuf,
     area: Rect,
     section: Range<usize>,
-    side: Option<bool>,
+    side: Option<DiffSide>,
     start: Point,
     end: Point,
     dragging: bool,

@@ -31,6 +31,13 @@ use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 pub(crate) const MIN_SPLIT_WIDTH: usize = 32;
 pub(crate) const FILE_HEADER_ROWS: usize = 2;
 
+/// The source side represented by a diff position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSide {
+    Old,
+    New,
+}
+
 /// A source position used to preserve scroll location across renders.
 #[derive(Debug, Clone)]
 pub struct Anchor {
@@ -67,7 +74,7 @@ pub struct CodeRegion {
     /// Index into the row's source anchors.
     pub anchor: usize,
     /// Old/new side in split layout; unified rows use `None`.
-    pub side: Option<bool>,
+    pub side: Option<DiffSide>,
     /// Display cells mapped to byte ranges in the source anchor.
     pub source: Vec<SourceCell>,
 }

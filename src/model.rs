@@ -99,16 +99,9 @@ impl Snapshot {
 }
 
 pub fn display_path(path: &std::path::Path) -> String {
-    path.to_string_lossy()
-        .chars()
-        .flat_map(|ch| {
-            if cfg!(windows) && ch == '\\' {
-                vec!['/']
-            } else if ch.is_control() {
-                ch.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![ch]
-            }
-        })
-        .collect()
+    crate::text::escape_controls(
+        path.to_string_lossy()
+            .chars()
+            .map(|ch| if cfg!(windows) && ch == '\\' { '/' } else { ch }),
+    )
 }
