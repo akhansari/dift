@@ -222,6 +222,7 @@ impl State {
             let changed = match action {
                 Action::Accept => self.finish_prompt(true),
                 Action::Cancel => self.finish_prompt(false),
+                Action::NextFindMatch => self.next_find_match(),
                 action => self.input_action(action, now),
             };
             return Effects::draw(changed);
@@ -303,6 +304,7 @@ impl State {
                 }
             }
             Action::Filter => self.begin_prompt(PromptKind::Filter),
+            Action::Find => self.begin_prompt(PromptKind::Find),
             Action::Search => self.begin_prompt(PromptKind::Search),
             Action::NextMatch => self.jump_match(true, height),
             Action::PreviousMatch => self.jump_match(false, height),

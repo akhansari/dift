@@ -25,6 +25,7 @@ pub(super) struct Viewport {
     offset: usize,
     selection: PathBuf,
     reveal_selection: bool,
+    find_query: Option<String>,
 }
 
 impl Viewport {
@@ -35,7 +36,13 @@ impl Viewport {
         if height == 0 {
             return;
         }
-        if (self.reveal_selection || self.selection != state.selection())
+        let find_query = state
+            .prompt()
+            .filter(|prompt| prompt.kind() == crate::state::PromptKind::Find)
+            .map(|prompt| prompt.editor().text().to_owned());
+        let find_edited = self.find_query != find_query;
+        self.find_query = find_query;
+        if (self.reveal_selection || self.selection != state.selection() || find_edited)
             && let Some(index) = rows.iter().position(|row| row.path == state.selection())
         {
             let padding = 2.min(height.saturating_sub(1) / 2);

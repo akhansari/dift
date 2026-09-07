@@ -42,12 +42,13 @@ pub struct EditorTarget<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     Filter,
+    Find,
     Search,
 }
 /// An active prompt and the values restored when it is cancelled.
 #[derive(Debug, Clone)]
 pub struct Prompt {
-    /// Whether the prompt edits the file filter or diff search.
+    /// Whether the prompt filters files, finds a file, or searches the diff.
     kind: PromptKind,
     /// Text and cursor being edited.
     editor: Editor,
@@ -59,6 +60,8 @@ pub struct Prompt {
     previous_unfiltered_collapsed: Option<BTreeSet<PathBuf>>,
     /// When the latest filter edit should be applied.
     filter_deadline: Option<Instant>,
+    find_matches: Vec<PathBuf>,
+    find_index: usize,
 }
 
 impl Prompt {
@@ -229,6 +232,18 @@ impl State {
             .len();
         self.tree = TreeIndex::new(&snapshot, &self.filter, &self.collapsed);
         self.snapshot = Arc::new(snapshot);
+        if let Some(prompt) = &mut self.prompt
+            && prompt.kind == PromptKind::Find
+            && !prompt.editor.text().is_empty()
+        {
+            prompt.find_matches = self.tree.find_files(prompt.editor.text());
+            prompt.find_index = prompt
+                .find_matches
+                .iter()
+                .position(|path| *path == self.selection)
+                .unwrap_or(0);
+            self.select_find_match();
+        }
         self.reconcile_selection();
     }
 
@@ -379,19 +394,21 @@ impl State {
     }
 
     fn begin_prompt(&mut self, kind: PromptKind) {
-        let text = if kind == PromptKind::Filter {
-            &self.filter
-        } else {
-            &self.diff.search
+        let text = match kind {
+            PromptKind::Filter => &self.filter,
+            PromptKind::Find => "",
+            PromptKind::Search => &self.diff.search,
         };
         self.prompt = Some(Prompt {
             kind,
-            editor: Editor::new(text.clone()),
-            previous: text.clone(),
+            editor: Editor::new(text.to_owned()),
+            previous: text.to_owned(),
             previous_selection: self.selection.clone(),
             previous_collapsed: self.collapsed.clone(),
             previous_unfiltered_collapsed: self.unfiltered_collapsed.clone(),
             filter_deadline: None,
+            find_matches: Vec::new(),
+            find_index: 0,
         });
     }
 
@@ -411,6 +428,7 @@ impl State {
         if let Some(prompt) = &self.prompt {
             let query = match prompt.kind {
                 PromptKind::Filter => &mut self.filter,
+                PromptKind::Find => return self.apply_find(),
                 PromptKind::Search => &mut self.diff.search,
             };
             changed = query != prompt.editor.text();
@@ -424,22 +442,95 @@ impl State {
         changed
     }
 
+    fn apply_find(&mut self) -> bool {
+        let Some(prompt) = &mut self.prompt else {
+            return false;
+        };
+        prompt.find_matches.clear();
+        prompt.find_index = 0;
+        let query = prompt.editor.text();
+        if query.is_empty() {
+            let changed = self.selection != prompt.previous_selection;
+            self.selection.clone_from(&prompt.previous_selection);
+            self.collapsed.clone_from(&prompt.previous_collapsed);
+            self.unfiltered_collapsed
+                .clone_from(&prompt.previous_unfiltered_collapsed);
+            self.tree.reveal(&self.collapsed);
+            if changed {
+                self.diff.scroll = 0;
+            }
+            self.reconcile_selection();
+            return changed;
+        }
+        prompt.find_matches = self.tree.find_files(query);
+        self.select_find_match()
+    }
+
+    fn next_find_match(&mut self) -> bool {
+        let Some(prompt) = &mut self.prompt else {
+            return false;
+        };
+        if prompt.kind != PromptKind::Find || prompt.find_matches.is_empty() {
+            return false;
+        }
+        prompt.find_index = (prompt.find_index + 1) % prompt.find_matches.len();
+        self.select_find_match()
+    }
+
+    fn select_find_match(&mut self) -> bool {
+        let Some(path) = self
+            .prompt
+            .as_ref()
+            .and_then(|prompt| prompt.find_matches.get(prompt.find_index))
+        else {
+            return false;
+        };
+        let changed = self.selection != *path;
+        self.selection.clone_from(path);
+        let mut revealed = false;
+        for ancestor in self.selection.ancestors().skip(1) {
+            revealed |= self.collapsed.remove(ancestor);
+        }
+        if revealed {
+            self.tree.reveal(&self.collapsed);
+        }
+        if changed {
+            self.diff.scroll = 0;
+        }
+        changed
+    }
+
     fn finish_prompt(&mut self, accept: bool) -> bool {
-        let mut changed = accept && self.apply_prompt();
+        let mut changed = accept
+            && self
+                .prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.kind != PromptKind::Find)
+            && self.apply_prompt();
         if let Some(prompt) = self.prompt.take()
             && !accept
         {
-            if prompt.kind == PromptKind::Filter {
-                changed =
-                    self.filter != prompt.previous || self.selection != prompt.previous_selection;
-                self.filter = prompt.previous;
-                self.collapsed = prompt.previous_collapsed;
-                self.unfiltered_collapsed = prompt.previous_unfiltered_collapsed;
-                self.tree.refilter(&self.filter, &self.collapsed);
-                self.selection = prompt.previous_selection;
-            } else {
-                changed = self.diff.search != prompt.previous;
-                self.diff.search = prompt.previous;
+            match prompt.kind {
+                PromptKind::Filter => {
+                    changed = self.filter != prompt.previous
+                        || self.selection != prompt.previous_selection;
+                    self.filter = prompt.previous;
+                    self.collapsed = prompt.previous_collapsed;
+                    self.unfiltered_collapsed = prompt.previous_unfiltered_collapsed;
+                    self.tree.refilter(&self.filter, &self.collapsed);
+                    self.selection = prompt.previous_selection;
+                }
+                PromptKind::Find => {
+                    changed = self.selection != prompt.previous_selection;
+                    self.collapsed = prompt.previous_collapsed;
+                    self.unfiltered_collapsed = prompt.previous_unfiltered_collapsed;
+                    self.tree.reveal(&self.collapsed);
+                    self.selection = prompt.previous_selection;
+                }
+                PromptKind::Search => {
+                    changed = self.diff.search != prompt.previous;
+                    self.diff.search = prompt.previous;
+                }
             }
         }
         let selection = self.selection.clone();

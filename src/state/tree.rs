@@ -9,6 +9,50 @@ use std::{
     path::{Path, PathBuf},
 };
 
+struct FuzzyPathMatcher {
+    atom: Atom,
+    matcher: Matcher,
+    graphemes: Vec<char>,
+}
+
+impl FuzzyPathMatcher {
+    fn new(query: &str) -> Self {
+        Self {
+            atom: Atom::new(
+                query,
+                CaseMatching::Smart,
+                Normalization::Smart,
+                AtomKind::Fuzzy,
+                false,
+            ),
+            matcher: Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths()),
+            graphemes: Vec::new(),
+        }
+    }
+
+    fn haystack<'a>(path: &'a str, graphemes: &'a mut Vec<char>) -> Utf32Str<'a> {
+        if path.is_ascii() {
+            Utf32Str::Ascii(path.as_bytes())
+        } else {
+            // Grapheme offsets keep highlighting aligned with displayed paths.
+            graphemes.clear();
+            graphemes.extend(nucleo_matcher::chars::graphemes(path));
+            Utf32Str::Unicode(graphemes)
+        }
+    }
+
+    fn score(&mut self, path: &str) -> Option<u16> {
+        let haystack = Self::haystack(path, &mut self.graphemes);
+        self.atom.score(haystack, &mut self.matcher)
+    }
+
+    fn indices(&mut self, path: &str, indices: &mut Vec<u32>) -> Option<u16> {
+        indices.clear();
+        let haystack = Self::haystack(path, &mut self.graphemes);
+        self.atom.indices(haystack, &mut self.matcher, indices)
+    }
+}
+
 /// A file or directory displayed in the sidebar tree.
 #[derive(Debug, Clone)]
 pub struct TreeRow {
@@ -129,15 +173,7 @@ impl TreeIndex {
     }
 
     pub(super) fn refilter(&mut self, filter: &str, collapsed: &BTreeSet<PathBuf>) {
-        let atom = Atom::new(
-            filter,
-            CaseMatching::Smart,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-            false,
-        );
-        let mut matcher = Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths());
-        let mut buffer = Vec::new();
+        let mut matcher = FuzzyPathMatcher::new(filter);
         let mut counts = vec![0; self.nodes.len()];
         let mut matches = vec![BTreeSet::new(); self.nodes.len()];
         let mut indices = Vec::new();
@@ -147,19 +183,8 @@ impl TreeIndex {
             if node.changes.is_empty() {
                 continue;
             }
-            if !filter.is_empty() {
-                let haystack = if node.searchable.is_ascii() {
-                    Utf32Str::Ascii(node.searchable.as_bytes())
-                } else {
-                    // Keep grapheme offsets even when combining marks leave
-                    // only ASCII base characters after segmentation.
-                    buffer.clear();
-                    buffer.extend(nucleo_matcher::chars::graphemes(&node.searchable));
-                    Utf32Str::Unicode(&buffer)
-                };
-                if atom.indices(haystack, &mut matcher, &mut indices).is_none() {
-                    continue;
-                }
+            if !filter.is_empty() && matcher.indices(&node.searchable, &mut indices).is_none() {
+                continue;
             }
             self.matching.insert(node.path.clone());
             counts[id] = 1;
@@ -244,6 +269,24 @@ impl TreeIndex {
 
     pub(super) fn matching_paths(&self) -> &BTreeSet<PathBuf> {
         &self.matching
+    }
+
+    pub(super) fn find_files(&self, query: &str) -> Vec<PathBuf> {
+        let mut matcher = FuzzyPathMatcher::new(query);
+        let mut matches = Vec::new();
+        for row in self.all.iter().filter(|row| !row.directory) {
+            let Some(score) = self
+                .by_path
+                .get(&row.path)
+                .and_then(|id| matcher.score(&self.nodes[*id].searchable))
+            else {
+                continue;
+            };
+            matches.push((&row.path, score));
+        }
+        // Stable sorting preserves tree order for equal scores.
+        matches.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+        matches.into_iter().map(|(path, _)| path.clone()).collect()
     }
 
     pub(super) fn selected_changes(&self, selection: &Path) -> Vec<usize> {

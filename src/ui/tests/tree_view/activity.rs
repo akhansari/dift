@@ -88,7 +88,7 @@ fn expiry_restores_the_native_background() -> crate::AppResult<()> {
     let now = Instant::now();
     let mut state = active(now, false);
     // When
-    state.advance_activity(now + Duration::from_secs(16));
+    state.advance_activity(now + Duration::from_secs(32));
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
     assert_eq!(buffer[(10, 2)].bg, Color::Reset);
@@ -102,7 +102,7 @@ fn expiry_restores_the_selected_row_background() -> crate::AppResult<()> {
     let now = Instant::now();
     let mut state = active(now, true);
     // When
-    state.advance_activity(now + Duration::from_secs(16));
+    state.advance_activity(now + Duration::from_secs(32));
     let buffer = render(&state, &Config::default(), 34, 8)?;
     // Then
     assert_eq!(buffer[(10, 2)].bg, Color::Rgb(35, 48, 68));
@@ -116,7 +116,7 @@ fn monochrome_has_no_visible_activity_signal() -> crate::AppResult<()> {
     let now = Instant::now();
     let mut state = active(now, true);
     let mut pulsing = render(&state, &Config::default(), 34, 8)?;
-    state.advance_activity(now + Duration::from_secs(16));
+    state.advance_activity(now + Duration::from_secs(32));
     let mut expired = render(&state, &Config::default(), 34, 8)?;
     // When
     crate::ui::suppress_colors(&mut pulsing);

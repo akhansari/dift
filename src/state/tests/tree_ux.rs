@@ -1,5 +1,6 @@
 use super::*;
-use crate::AppResult;
+use crate::{AppResult, config::Config, input::Bindings};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn row<'a>(state: &'a State, path: &str) -> AppResult<&'a TreeRow> {
     state
@@ -20,6 +21,11 @@ fn filter(state: &mut State, query: &str) {
     state.action(Action::Filter, 10, Instant::now());
     state.paste(query, Instant::now());
     state.action(Action::Accept, 10, Instant::now());
+}
+
+fn find(state: &mut State, query: &str) {
+    state.action(Action::Find, 10, Instant::now());
+    state.paste(query, Instant::now());
 }
 
 #[test]
@@ -218,4 +224,472 @@ fn filtering_out_a_file_selects_its_nearest_remaining_ancestor() {
     // Then
     assert_eq!(state.selection(), Path::new("src"));
     assert_eq!(state.selected_changes(), [2]);
+}
+
+#[test]
+fn find_live_selects_the_highest_scoring_file() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("alpha-target.rs", Category::Unstaged),
+        ("target.rs", Category::Unstaged),
+    ]));
+    state.action(Action::Last, 10, Instant::now());
+    // When
+    find(&mut state, "target.rs");
+    // Then
+    assert_eq!(state.selection(), Path::new("target.rs"));
+}
+
+#[test]
+fn find_live_selects_the_first_file_in_tree_order_when_scores_tie() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    state.action(Action::Last, 10, Instant::now());
+    // When
+    find(&mut state, "file.rs");
+    // Then
+    assert_eq!(state.selection(), Path::new("a/file.rs"));
+}
+
+#[test]
+fn find_reveals_a_match_below_a_collapsed_directory() {
+    // Given
+    let mut state = collapsed_src();
+    // When
+    find(&mut state, "b.rs");
+    // Then
+    assert_eq!(state.selection(), Path::new("src/b.rs"));
+    assert!(!state.is_collapsed(Path::new("src")));
+    assert!(paths(&state).contains(&Path::new("src/b.rs")));
+}
+
+#[test]
+fn accepting_find_keeps_its_selected_file() {
+    // Given
+    let mut state = state();
+    find(&mut state, "b.rs");
+    // When
+    state.action(Action::Accept, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("src/b.rs"));
+    assert!(state.prompt().is_none());
+}
+
+#[test]
+fn cancelling_find_restores_its_selection_and_collapses() {
+    // Given
+    let mut state = collapsed_src();
+    find(&mut state, "b.rs");
+    // When
+    state.action(Action::Cancel, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("src"));
+    assert!(state.is_collapsed(Path::new("src")));
+    assert!(!paths(&state).contains(&Path::new("src/b.rs")));
+}
+
+#[test]
+fn emptying_find_restores_its_selection_and_collapses() {
+    // Given
+    let mut state = collapsed_src();
+    state.action(Action::Last, 10, Instant::now());
+    find(&mut state, "b.rs");
+    // When
+    state.action(Action::ClearBefore, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("tests/c.rs"));
+    assert!(state.is_collapsed(Path::new("src")));
+    assert!(!paths(&state).contains(&Path::new("src/b.rs")));
+    assert_eq!(
+        state.prompt().map(|prompt| prompt.editor().text()),
+        Some("")
+    );
+}
+
+#[test]
+fn find_without_matches_leaves_the_current_selection_unchanged() {
+    // Given
+    let mut state = collapsed_src();
+    // When
+    find(&mut state, "missing-file");
+    // Then
+    assert_eq!(state.selection(), Path::new("src"));
+    assert!(state.is_collapsed(Path::new("src")));
+}
+
+#[test]
+fn find_respects_an_existing_filter_without_changing_its_rows() {
+    // Given
+    let mut state = state();
+    filter(&mut state, "tests");
+    let filtered_paths: Vec<_> = paths(&state).into_iter().map(Path::to_owned).collect();
+    // When
+    find(&mut state, ".rs");
+    // Then
+    assert_eq!(state.selection(), Path::new("tests/c.rs"));
+    assert_eq!(state.filter(), "tests");
+    assert_eq!(paths(&state), filtered_paths);
+}
+
+#[test]
+fn next_find_match_uses_descending_fuzzy_score_order() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("alpha-target.rs", Category::Unstaged),
+        ("t-a-r-g-e-t.rs", Category::Unstaged),
+        ("target.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "target.rs");
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("alpha-target.rs"));
+}
+
+#[test]
+fn next_find_match_preserves_tree_order_for_equal_scores() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+        ("c/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("b/file.rs"));
+}
+
+#[test]
+fn next_find_match_wraps_to_the_highest_scoring_match() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("a/file.rs"));
+}
+
+#[test]
+fn find_cycling_reaches_matches_beyond_the_first_ten() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+        ("c/file.rs", Category::Unstaged),
+        ("d/file.rs", Category::Unstaged),
+        ("e/file.rs", Category::Unstaged),
+        ("f/file.rs", Category::Unstaged),
+        ("g/file.rs", Category::Unstaged),
+        ("h/file.rs", Category::Unstaged),
+        ("i/file.rs", Category::Unstaged),
+        ("j/file.rs", Category::Unstaged),
+        ("k/file.rs", Category::Unstaged),
+        ("l/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("l/file.rs"));
+}
+
+#[test]
+fn moving_the_find_cursor_does_not_restart_the_match_cycle() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+        ("c/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::CursorLeft, 10, Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("c/file.rs"));
+}
+
+#[test]
+fn editing_the_find_query_restarts_the_match_cycle() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // When
+    state.paste(".rs", Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("a/file.rs"));
+}
+
+#[test]
+fn accepting_find_keeps_a_cycled_selection() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // When
+    state.action(Action::Accept, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("b/file.rs"));
+    assert!(state.prompt().is_none());
+}
+
+#[test]
+fn cycling_find_accumulates_revealed_ancestors() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    state.action(Action::First, 10, Instant::now());
+    find(&mut state, "file.rs");
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("b/file.rs"));
+    assert!(!state.is_collapsed(Path::new("a")));
+    assert!(!state.is_collapsed(Path::new("b")));
+}
+
+#[test]
+fn cancelling_find_restores_all_collapses_revealed_while_cycling() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    state.action(Action::First, 10, Instant::now());
+    find(&mut state, "file.rs");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // When
+    state.action(Action::Cancel, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new(""));
+    assert!(state.is_collapsed(Path::new("a")));
+    assert!(state.is_collapsed(Path::new("b")));
+    assert_eq!(
+        paths(&state),
+        [Path::new(""), Path::new("a"), Path::new("b")]
+    );
+}
+
+#[test]
+fn next_find_match_with_an_empty_query_is_a_no_op() {
+    // Given
+    let mut state = collapsed_src();
+    state.action(Action::Find, 10, Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("src"));
+    assert!(state.is_collapsed(Path::new("src")));
+}
+
+#[test]
+fn next_find_match_without_matches_is_a_no_op() {
+    // Given
+    let mut state = collapsed_src();
+    find(&mut state, "missing-file");
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("src"));
+    assert!(state.is_collapsed(Path::new("src")));
+}
+
+#[test]
+fn next_find_match_is_a_no_op_in_a_filter_prompt() {
+    // Given
+    let mut state = collapsed_src();
+    state.action(Action::Filter, 10, Instant::now());
+    state.paste("src", Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("src"));
+    assert_eq!(state.filter(), "");
+    assert_eq!(
+        state.prompt().map(|prompt| prompt.editor().text()),
+        Some("src")
+    );
+}
+
+#[test]
+fn next_find_match_is_a_no_op_in_a_search_prompt() {
+    // Given
+    let mut state = state();
+    state.action(Action::Search, 10, Instant::now());
+    state.paste("needle", Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new(""));
+    assert_eq!(state.search(), "needle");
+    assert_eq!(
+        state.prompt().map(|prompt| prompt.editor().text()),
+        Some("needle")
+    );
+}
+
+#[test]
+fn find_cycling_respects_the_existing_filter() {
+    // Given
+    let mut state = state();
+    filter(&mut state, "src");
+    let filtered_paths: Vec<_> = paths(&state).into_iter().map(Path::to_owned).collect();
+    find(&mut state, ".rs");
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("src/b.rs"));
+    assert_eq!(state.filter(), "src");
+    assert_eq!(paths(&state), filtered_paths);
+}
+
+#[test]
+fn default_ctrl_n_dispatches_next_find_match() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    // When
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        &Bindings::defaults(),
+        10,
+        Instant::now(),
+    );
+    // Then
+    assert_eq!(state.selection(), Path::new("b/file.rs"));
+}
+
+#[test]
+fn refreshing_find_keeps_the_cycled_match_when_it_survives() {
+    // Given
+    let mut state = state();
+    find(&mut state, "r");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    let selected = state.selection().to_owned();
+    // When
+    state.update_snapshot(snapshot());
+    // Then
+    assert_eq!(state.selection(), selected);
+}
+
+#[test]
+fn cycling_find_after_refresh_uses_the_new_matching_paths() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("c/file.rs", Category::Unstaged),
+    ]));
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("c/file.rs"));
+}
+
+#[test]
+fn clearing_find_discards_the_previous_match_cycle() {
+    // Given
+    let mut state = collapsed_src();
+    find(&mut state, "r");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    state.action(Action::ClearBefore, 10, Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("src"));
+    assert!(state.is_collapsed(Path::new("src")));
+}
+
+#[test]
+fn editing_find_to_no_matches_discards_the_previous_match_cycle() {
+    // Given
+    let mut state = state();
+    find(&mut state, "r");
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    let selected = state.selection().to_owned();
+    state.paste("missing-file", Instant::now());
+    // When
+    state.action(Action::NextFindMatch, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), selected);
+}
+
+#[test]
+fn remapped_key_dispatches_next_find_match() -> AppResult<()> {
+    // Given
+    let bindings = Config::parse("keybindings { input { next-find-match \"alt-j\"; }; }")?.bindings;
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/file.rs", Category::Unstaged),
+        ("b/file.rs", Category::Unstaged),
+    ]));
+    find(&mut state, "file.rs");
+    // When
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT),
+        &bindings,
+        10,
+        Instant::now(),
+    );
+    // Then
+    assert_eq!(state.selection(), Path::new("b/file.rs"));
+    Ok(())
 }

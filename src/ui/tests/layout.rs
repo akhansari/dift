@@ -230,6 +230,45 @@ fn editing_a_filter_keeps_the_divider_when_the_tree_fits() -> AppResult<()> {
 }
 
 #[test]
+fn find_uses_its_own_prompt_label() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 1);
+    state.action(Action::Find, 5, Instant::now());
+    // When
+    let buffer = render(&state, &Config::default(), 120, 8)?;
+    // Then
+    assert!(line(&buffer, 7).starts_with("Find › "));
+    assert!(line(&buffer, 7).contains("ctrl-n: next match"));
+    Ok(())
+}
+
+#[test]
+fn find_hint_uses_the_configured_navigation_key() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 1);
+    state.action(Action::Find, 5, Instant::now());
+    let config = Config::parse("keybindings { input { next-find-match \"alt-j\"; }; }")?;
+    // When
+    let buffer = render(&state, &config, 120, 8)?;
+    // Then
+    assert!(line(&buffer, 7).contains("alt-j: next match"));
+    assert!(!line(&buffer, 7).contains("ctrl-n"));
+    Ok(())
+}
+
+#[test]
+fn filter_hint_does_not_offer_find_navigation() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 1);
+    state.action(Action::Filter, 5, Instant::now());
+    // When
+    let buffer = render(&state, &Config::default(), 120, 8)?;
+    // Then
+    assert!(!line(&buffer, 7).contains("next match"));
+    Ok(())
+}
+
+#[test]
 fn diff_focus_keeps_the_status_activity_and_rules_muted() -> AppResult<()> {
     // Given
     let mut state = state_with("main.rs", 1);
@@ -607,6 +646,20 @@ fn help_shows_a_scrollbar_in_a_centered_eighty_percent_height_popup() -> AppResu
     assert_eq!(buffer[(97, 3)].symbol(), "┃");
     assert_eq!(buffer[(97, 3)].fg, Palette::new(false).accent);
     assert_eq!(buffer[(97, 16)].symbol(), " ");
+    Ok(())
+}
+
+#[test]
+fn help_lists_the_find_binding() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 1);
+    state.action(Action::Help, 8, Instant::now());
+    state.action(Action::PageDown, 8, Instant::now());
+    // When
+    let buffer = render(&state, &Config::default(), 120, 20)?;
+    // Then
+    assert!(line(&buffer, 16).contains("shift-f"));
+    assert!(line(&buffer, 16).contains("find"));
     Ok(())
 }
 

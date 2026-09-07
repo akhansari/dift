@@ -449,6 +449,25 @@ fn filter_prompts_block_mouse_scrolling() -> AppResult<()> {
 }
 
 #[test]
+fn find_reveals_an_already_selected_file_scrolled_out_of_view() -> AppResult<()> {
+    // Given
+    let mut tree = MouseTree::long()?;
+    tree.state.action(Action::NextFile, 4, Instant::now());
+    tree.draw()?;
+    tree.mouse(MouseEventKind::ScrollDown, 2, 2)?;
+    tree.mouse(MouseEventKind::ScrollDown, 2, 2)?;
+    assert!(!tree.line(2).contains("a.rs"));
+    tree.state.action(Action::Find, 4, Instant::now());
+    // When
+    tree.state.paste("a.rs", Instant::now());
+    tree.draw()?;
+    // Then
+    assert!(tree.line(1).contains("a.rs"));
+    assert_eq!(tree.state.selection(), Path::new("src/a.rs"));
+    Ok(())
+}
+
+#[test]
 fn search_prompts_block_mouse_selection() -> AppResult<()> {
     // Given
     let mut tree = MouseTree::long()?;

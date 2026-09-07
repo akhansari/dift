@@ -64,6 +64,8 @@ pub enum Action {
     First,
     Last,
     Filter,
+    Find,
+    NextFindMatch,
     Search,
     NextMatch,
     PreviousMatch,
@@ -84,7 +86,7 @@ pub enum Action {
     ClearAfter,
 }
 impl Action {
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 38] = [
         Self::Quit,
         Self::Sidebar,
         Self::Layout,
@@ -103,6 +105,8 @@ impl Action {
         Self::First,
         Self::Last,
         Self::Filter,
+        Self::Find,
+        Self::NextFindMatch,
         Self::Search,
         Self::NextMatch,
         Self::PreviousMatch,
@@ -142,6 +146,8 @@ impl Action {
             Self::First => "first",
             Self::Last => "last",
             Self::Filter => "filter",
+            Self::Find => "find",
+            Self::NextFindMatch => "next-find-match",
             Self::Search => "search",
             Self::NextMatch => "next-match",
             Self::PreviousMatch => "previous-match",
@@ -171,6 +177,7 @@ impl Action {
         matches!(
             self,
             Self::CursorLeft
+                | Self::NextFindMatch
                 | Self::CursorRight
                 | Self::CursorHome
                 | Self::CursorEnd
@@ -323,6 +330,7 @@ impl Bindings {
             (Action::First, "home"),
             (Action::Last, "end"),
             (Action::Filter, "f"),
+            (Action::Find, "F"),
             (Action::Search, "/"),
             (Action::NextMatch, "]"),
             (Action::PreviousMatch, "["),
@@ -335,6 +343,7 @@ impl Bindings {
         ];
         let tree = [(Action::Left, "left h"), (Action::Right, "right l")];
         let input = [
+            (Action::NextFindMatch, "ctrl-n"),
             (Action::Cancel, "escape"),
             (Action::Accept, "enter"),
             (Action::CursorLeft, "left"),

@@ -513,14 +513,19 @@ fn draw(
         view.status,
     );
     if let Some(prompt) = state.prompt() {
-        let label = if prompt.kind() == PromptKind::Filter {
-            "Filter › "
-        } else {
-            "Search › "
+        let label = match prompt.kind() {
+            PromptKind::Filter => "Filter › ",
+            PromptKind::Find => "Find › ",
+            PromptKind::Search => "Search › ",
         };
         let accept = config.bindings.keys(Scope::Input, Action::Accept);
         let cancel = config.bindings.keys(Scope::Input, Action::Cancel);
-        let suffix = format!("  ({accept}: keep · {cancel}: cancel)");
+        let next = config.bindings.keys(Scope::Input, Action::NextFindMatch);
+        let suffix = if prompt.kind() == PromptKind::Find && !next.is_empty() {
+            format!("  ({next}: next match · {accept}: keep · {cancel}: cancel)")
+        } else {
+            format!("  ({accept}: keep · {cancel}: cancel)")
+        };
         let available = view.footer.width.saturating_sub(label.len() as u16 + 1) as usize;
         let mut start = 0;
         while UnicodeWidthStr::width(&prompt.editor().text()[start..prompt.editor().cursor()])
@@ -549,12 +554,13 @@ fn draw(
     } else {
         let keys = |action| config.bindings.keys(Scope::Global, action);
         let footer = format!(
-            " {} files  {} view  {} sidebar  {} split  {} filter  {} search  {} help  {} quit",
+            " {} files  {} view  {} sidebar  {} split  {} filter  {} find  {} search  {} help  {} quit",
             format_args!("{}/{}", keys(Action::NextFile), keys(Action::PreviousFile)),
             format_args!("{}/{}", keys(Action::HalfDown), keys(Action::HalfUp)),
             keys(Action::Sidebar),
             keys(Action::Layout),
             keys(Action::Filter),
+            keys(Action::Find),
             keys(Action::Search),
             keys(Action::Help),
             keys(Action::Quit)

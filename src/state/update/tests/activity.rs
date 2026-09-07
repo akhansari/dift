@@ -101,7 +101,7 @@ fn activity_fades_out_without_recollecting_or_rendering_the_diff() {
     let now = Instant::now();
     let mut state = active(now);
     // When
-    let effects = state.advance_activity(now + Duration::from_secs(15));
+    let effects = state.advance_activity(now + Duration::from_secs(31));
     // Then
     assert_eq!(intensity(&state), 0.5);
     assert!(effects.redraw);
@@ -110,16 +110,16 @@ fn activity_fades_out_without_recollecting_or_rendering_the_diff() {
 }
 
 #[test]
-fn activity_expires_after_sixteen_seconds() {
+fn activity_expires_after_thirty_two_seconds() {
     // Given
     let now = Instant::now();
     let mut state = active(now);
     // When
-    state.advance_activity(now + Duration::from_secs(16));
+    state.advance_activity(now + Duration::from_secs(32));
     // Then
     assert_eq!(intensity(&state), 0.0);
     assert_eq!(state.activity_intensity(Path::new(""), true), 0.0);
-    assert!(!state.advance_activity(now + Duration::from_secs(17)).redraw);
+    assert!(!state.advance_activity(now + Duration::from_secs(33)).redraw);
 }
 
 #[test]
@@ -127,29 +127,29 @@ fn a_new_edit_restarts_from_the_current_fade_intensity() {
     // Given
     let now = Instant::now();
     let mut state = active(now);
-    state.advance_activity(now + Duration::from_secs(15));
+    state.advance_activity(now + Duration::from_secs(31));
     // When
     collect(
         &mut state,
         &[("src/a.rs", "third"), ("src/b.rs", "after")],
-        now + Duration::from_secs(15),
+        now + Duration::from_secs(31),
     );
     // Then
     assert_eq!(intensity(&state), 0.5);
 }
 
 #[test]
-fn a_new_edit_gets_another_full_sixteen_seconds() {
+fn a_new_edit_gets_another_full_thirty_two_seconds() {
     // Given
     let now = Instant::now();
     let mut state = active(now);
     collect(
         &mut state,
         &[("src/a.rs", "third"), ("src/b.rs", "after")],
-        now + Duration::from_secs(15),
+        now + Duration::from_secs(31),
     );
     // When
-    state.advance_activity(now + Duration::from_secs(30));
+    state.advance_activity(now + Duration::from_secs(62));
     // Then
     assert_eq!(intensity(&state), 0.5);
 }
@@ -258,8 +258,8 @@ fn hidden_tree_activity_keeps_its_original_deadline() {
     let mut state = active(now);
     state.action(Action::Sidebar, 10, now + Duration::from_secs(1));
     // When
-    state.advance_activity(now + Duration::from_secs(16));
-    state.action(Action::Sidebar, 10, now + Duration::from_secs(17));
+    state.advance_activity(now + Duration::from_secs(32));
+    state.action(Action::Sidebar, 10, now + Duration::from_secs(33));
     // Then
     assert_eq!(intensity(&state), 0.0);
 }
@@ -310,10 +310,10 @@ fn unchanged_refreshes_do_not_extend_activity() {
     collect(
         &mut state,
         &[("src/a.rs", "after"), ("src/b.rs", "after")],
-        now + Duration::from_secs(15),
+        now + Duration::from_secs(31),
     );
     // When
-    state.advance_activity(now + Duration::from_secs(16));
+    state.advance_activity(now + Duration::from_secs(32));
     // Then
     assert_eq!(intensity(&state), 0.0);
 }

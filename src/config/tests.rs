@@ -45,6 +45,27 @@ fn generated_config_restores_working_defaults() -> Result<(), ConfigError> {
         ),
         Some(Action::NextFile)
     );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Tree,
+            KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT)
+        ),
+        Some(Action::Find)
+    );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Diff,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE)
+        ),
+        Some(Action::Filter)
+    );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Diff,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)
+        ),
+        Some(Action::Search)
+    );
     assert_eq!(config.limits.lines, 20_000);
     assert_eq!(config.emphasis, Emphasis::Word);
     assert_eq!(config.icons, Icons::None);

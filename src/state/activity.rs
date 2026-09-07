@@ -6,7 +6,7 @@ use std::{
 };
 
 const ATTACK: Duration = Duration::from_millis(150);
-const LIFETIME: Duration = Duration::from_secs(16);
+const LIFETIME: Duration = Duration::from_secs(32);
 const HOLD_UNTIL: Duration = LIFETIME.saturating_sub(Duration::from_secs(2));
 const DISMISS: Duration = Duration::from_millis(200);
 
