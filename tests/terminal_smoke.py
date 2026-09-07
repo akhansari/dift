@@ -1,5 +1,6 @@
 """Unix terminal integration checks; run after cargo build, using only Python's stdlib."""
 
+import base64
 import codecs
 import errno
 import fcntl
@@ -50,7 +51,9 @@ class Screen:
         self.width, self.height = width, height
         self.rows = [[" "] * width for _ in range(height)]
         self.foregrounds = [[None] * width for _ in range(height)]
+        self.inversions = [[False] * width for _ in range(height)]
         self.foreground = None
+        self.inverted = False
         self.x = self.y = 0
         self.pending = ""
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -58,6 +61,12 @@ class Screen:
     def feed(self, data):
         self.pending += self.decoder.decode(data)
         while self.pending:
+            if self.pending.startswith("\x1b]"):
+                terminator = re.search(r"\x07|\x1b\\", self.pending)
+                if terminator is None:
+                    return
+                self.pending = self.pending[terminator.end():]
+                continue
             if self.pending.startswith("\x1b["):
                 match = re.match(r"\x1b\[([0-?]*)([ -/]*)([@-~])", self.pending)
                 if match is None:
@@ -86,6 +95,7 @@ class Screen:
                 elif final == "J" and args[0] in (2, 3):
                     self.rows = [[" "] * self.width for _ in range(self.height)]
                     self.foregrounds = [[None] * self.width for _ in range(self.height)]
+                    self.inversions = [[False] * self.width for _ in range(self.height)]
                 elif final == "m":
                     self.set_colors(args)
                 elif final == "K" and self.y < self.height:
@@ -93,6 +103,7 @@ class Screen:
                     end = self.width if args[0] in (0, 2) else self.x + 1
                     self.rows[self.y][start:end] = [" "] * (end - start)
                     self.foregrounds[self.y][start:end] = [self.foreground] * (end - start)
+                    self.inversions[self.y][start:end] = [False] * (end - start)
             elif self.pending.startswith("\x1b"):
                 if len(self.pending) < 2:
                     return
@@ -115,12 +126,17 @@ class Screen:
                     if 0 <= self.y < self.height and 0 <= self.x < self.width:
                         self.rows[self.y][self.x] = ch
                         self.foregrounds[self.y][self.x] = self.foreground
+                        self.inversions[self.y][self.x] = self.inverted
                     self.x += width
 
     def set_colors(self, args):
         position = 0
         while position < len(args):
             code = args[position]
+            if code in (0, 27):
+                self.inverted = False
+            elif code == 7:
+                self.inverted = True
             if code in (0, 39):
                 self.foreground = None
             elif 30 <= code <= 37 or 90 <= code <= 97:
@@ -137,6 +153,17 @@ class Screen:
     @property
     def text(self):
         return "\n".join("".join(row) for row in self.rows)
+
+    def locate(self, text):
+        for y, row in enumerate(self.rows):
+            x = "".join(row).find(text)
+            if x >= 0:
+                return x, y
+        raise AssertionError(f"Missing {text!r} in terminal:\n{self.text}")
+
+    def highlighted_code(self):
+        return [selected for row, inversions in zip(self.rows, self.inversions)
+                if (selected := "".join(cell for cell, inverted in zip(row, inversions) if inverted))]
 
 
 class Session:
@@ -250,6 +277,30 @@ class TerminalSmoke(unittest.TestCase):
             "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false",
             "-c", "core.hooksPath=/nonexistent-dift-hooks", *args
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def test_drag_highlights_only_code_and_keeps_it_after_release(self):
+        # Given
+        (self.root / "selection_demo.rs").write_text("first_selection_line\nsecond_selection_line\n")
+        self.session.wait("selection_demo.rs")
+        self.session.send("fselection_demo\r")
+        self.session.wait("second_selection_line")
+        self.session.advance(0.4)
+        x1, y1 = self.session.screen.locate("first_selection_line")
+        x2, y2 = self.session.screen.locate("second_selection_line")
+        x2 += len("second_selection_line") - 1
+        # When
+        self.session.send(f"\x1b[<0;{x1 + 1};{y1 + 1}M")
+        self.session.send(f"\x1b[<32;{x2 + 1};{y2 + 1}M")
+        self.session.send(f"\x1b[<0;{x2 + 1};{y2 + 1}m")
+        self.session.wait_for(lambda _: self.session.screen.highlighted_code() == [
+            "first_selection_line", "second_selection_line"], "code-only drag highlight")
+        self.session.advance(0.1)
+        # Then
+        self.assertEqual(self.session.screen.highlighted_code(), ["first_selection_line", "second_selection_line"])
+        payloads = re.findall(rb"\x1b\]52;c;([A-Za-z0-9+/=]*)\x1b\\", self.session.raw)
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(base64.b64decode(payloads[0], validate=True),
+                         b"first_selection_line\nsecond_selection_line")
 
     def spacing_change(self):
         (self.root / "spacing.txt").write_text("one two\n")

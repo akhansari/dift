@@ -4,6 +4,7 @@ use crate::{
     model::{Category, Change, Snapshot},
 };
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+mod mouse;
 
 fn state_with(files: &[(&str, Category)]) -> State {
     let mut state = State::new(false);
@@ -44,7 +45,7 @@ fn render(state: &State, config: &Config, width: u16, height: u16) -> crate::App
             state,
             config,
             frame.area(),
-            &mut ListState::default(),
+            &mut tree::Viewport::default(),
         );
     })?;
     Ok(terminal.backend().buffer().clone())

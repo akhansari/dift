@@ -456,6 +456,7 @@ fn anchored_document(anchors: Vec<Anchor>) -> Document {
                 Arc::new(Row {
                     line: Line::raw(anchor.text.to_string()),
                     anchors: vec![anchor],
+                    code: Vec::new(),
                 })
             })
             .collect(),

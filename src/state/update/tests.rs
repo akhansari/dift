@@ -201,6 +201,7 @@ fn document(lines: &[&str], partial: bool) -> Arc<Document> {
             .enumerate()
             .map(|(index, text)| {
                 Arc::new(Row {
+                    code: Vec::new(),
                     line: Line::raw((*text).to_owned()),
                     anchors: vec![Anchor {
                         path: Arc::new("file.txt".into()),

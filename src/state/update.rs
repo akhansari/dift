@@ -39,6 +39,39 @@ pub(super) struct Displayed {
 }
 
 impl State {
+    /// Select a visible tree row without resetting an already selected diff.
+    pub(crate) fn select_tree_row(&mut self, index: usize) -> Effects {
+        let Some(row) = self.tree.rows(false).get(index) else {
+            return Effects::default();
+        };
+        let changed = self.selection != row.path;
+        if changed {
+            self.selection.clone_from(&row.path);
+            self.scroll = 0;
+        }
+        self.focus = Scope::Tree;
+        Effects::draw(changed)
+    }
+
+    /// Toggle a visible directory, retaining selection unless it becomes hidden.
+    pub(crate) fn toggle_tree_directory(&mut self, index: usize) -> Effects {
+        let Some(row) = self.tree.rows(false).get(index).filter(|row| row.directory) else {
+            return Effects::default();
+        };
+        if !self.collapsed.remove(&row.path) {
+            self.collapsed.insert(row.path.clone());
+        }
+        self.tree.reveal(&self.collapsed);
+        let hidden = !self
+            .tree
+            .rows(false)
+            .iter()
+            .any(|row| row.path == self.selection);
+        self.reconcile_selection();
+        self.focus = Scope::Tree;
+        Effects::draw(hidden)
+    }
+
     fn show_toast(&mut self, message: String, now: Instant) {
         self.toast = Some(Toast {
             message,

@@ -55,6 +55,27 @@ pub struct Row {
     pub line: Line<'static>,
     /// Source positions represented by this row.
     pub anchors: Vec<Anchor>,
+    /// Selectable source text, excluding gutters and layout padding.
+    pub code: Vec<CodeRegion>,
+}
+
+/// A contiguous run of code cells on a rendered row.
+#[derive(Debug, Clone)]
+pub struct CodeRegion {
+    /// Terminal columns relative to the diff pane.
+    pub columns: Range<usize>,
+    /// Index into the row's source anchors.
+    pub anchor: usize,
+    /// Old/new side in split layout; unified rows use `None`.
+    pub side: Option<bool>,
+    /// Display cells mapped to byte ranges in the source anchor.
+    pub source: Vec<SourceCell>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceCell {
+    pub columns: Range<usize>,
+    pub bytes: Range<usize>,
 }
 
 /// A search match located in a rendered document.
@@ -298,6 +319,12 @@ impl CachedLayout {
                 .map(|row| {
                     size_of::<Row>()
                         + row.anchors.len() * size_of::<Anchor>()
+                        + row.code.len() * size_of::<CodeRegion>()
+                        + row
+                            .code
+                            .iter()
+                            .map(|region| region.source.len() * size_of::<SourceCell>())
+                            .sum::<usize>()
                         + row
                             .line
                             .spans

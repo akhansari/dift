@@ -143,6 +143,12 @@ impl State {
     pub fn document(&self) -> &Document {
         &self.document
     }
+    pub(crate) fn shared_document(&self) -> &Arc<Document> {
+        &self.document
+    }
+    pub(crate) fn focus_diff(&mut self) {
+        self.focus = Scope::Diff;
+    }
     pub fn loaded(&self) -> &BTreeSet<PathBuf> {
         &self.loaded
     }

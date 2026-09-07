@@ -6,6 +6,8 @@ use crate::{
 };
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 mod headers;
+mod mouse;
+mod selection;
 
 fn state_with(path: &str, lines: usize) -> State {
     let mut state = State::new(false);
@@ -120,7 +122,7 @@ fn draw_with_activity(
             state,
             config,
             activity,
-            &mut ListState::default(),
+            &mut Interaction::default(),
             state.help_scroll(),
         )
     })?;

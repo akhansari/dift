@@ -15,6 +15,7 @@ pub(super) fn push_header(document: &mut Document, text: &str, style: Style) {
     document.rows.push(Arc::new(Row {
         line: Line::styled(text, style),
         anchors: Vec::new(),
+        code: Vec::new(),
     }));
 }
 
@@ -60,6 +61,8 @@ struct CellRow {
     anchor: Option<Anchor>,
     hits: usize,
     width: usize,
+    code_start: usize,
+    source: Vec<SourceCell>,
 }
 
 /// Hunk context visits source lines in order; scan each source at most once.
@@ -161,6 +164,8 @@ fn cells(
         }),
         hits: 0,
         width: prefix_width,
+        code_start: prefix_width,
+        source: Vec::new(),
     };
     let mut rows = Vec::new();
     let mut row = make_row(0, true);
@@ -221,6 +226,19 @@ fn cells(
             } else {
                 row.spans.push(Span::styled(glyph.to_string(), style));
             }
+            if let Some(previous) = row
+                .source
+                .last_mut()
+                .filter(|previous| glyph_width == 0 || previous.bytes == (byte..end))
+            {
+                previous.columns.end = row.width + glyph_width;
+                previous.bytes.end = end;
+            } else {
+                row.source.push(SourceCell {
+                    columns: row.width..row.width + glyph_width,
+                    bytes: byte..end,
+                });
+            }
             row.width += glyph_width;
         }
     }
@@ -241,6 +259,8 @@ fn cells(
                     anchor: None,
                     hits: 0,
                     width,
+                    code_start: width,
+                    source: Vec::new(),
                 }),
         );
     }
@@ -287,6 +307,17 @@ fn append_unified(
             row.hits,
         ));
         document.rows.push(Arc::new(Row {
+            code: row
+                .anchor
+                .as_ref()
+                .map(|_| CodeRegion {
+                    columns: row.code_start..row.width,
+                    anchor: 0,
+                    side: None,
+                    source: row.source,
+                })
+                .into_iter()
+                .collect(),
             line: Line::from(row.spans),
             anchors: row.anchor.into_iter().collect(),
         }));
@@ -317,8 +348,17 @@ fn append_split(
         cancel.check()?;
         let mut spans = Vec::new();
         let mut anchors = Vec::new();
+        let mut code = Vec::new();
         let mut hits = 0;
         if let Some(row) = a.next() {
+            if row.anchor.is_some() {
+                code.push(CodeRegion {
+                    columns: row.code_start..row.width,
+                    anchor: anchors.len(),
+                    side: Some(true),
+                    source: row.source,
+                });
+            }
             spans.extend(row.spans);
             anchors.extend(row.anchor);
             hits += row.hits;
@@ -327,6 +367,22 @@ fn append_split(
         }
         spans.push(Span::styled("│", palette.base().fg(palette.muted)));
         if let Some(row) = b.next() {
+            if row.anchor.is_some() {
+                code.push(CodeRegion {
+                    columns: a_width + 1 + row.code_start..a_width + 1 + row.width,
+                    anchor: anchors.len(),
+                    side: Some(false),
+                    source: row
+                        .source
+                        .into_iter()
+                        .map(|cell| SourceCell {
+                            columns: a_width + 1 + cell.columns.start
+                                ..a_width + 1 + cell.columns.end,
+                            bytes: cell.bytes,
+                        })
+                        .collect(),
+                });
+            }
             spans.extend(row.spans);
             anchors.extend(row.anchor);
             hits += row.hits;
@@ -342,6 +398,7 @@ fn append_split(
         document.rows.push(Arc::new(Row {
             line: Line::from(spans),
             anchors,
+            code,
         }));
     }
     Ok(())
@@ -367,6 +424,7 @@ pub(super) fn file(
     document.rows.push(Arc::new(Row {
         line: header::line(change, width, palette),
         anchors: Vec::new(),
+        code: Vec::new(),
     }));
     push_header(
         &mut document,

@@ -1,7 +1,9 @@
 mod activity;
+mod clipboard;
 mod collect;
 #[cfg(test)]
 mod fixtures;
+mod selection;
 mod tree;
 mod watch;
 
@@ -9,7 +11,7 @@ use crate::{
     AppResult,
     config::Config,
     git::{Mode, Repository},
-    input::{Action, Scope},
+    input::{Action, Bindings, Scope},
     render::{FILE_HEADER_ROWS, Palette, worker::RenderWorker},
     state::{Effects, PromptKind, State},
 };
@@ -17,16 +19,17 @@ use activity::{Activity, ActivityStatus};
 use ratatui::{
     Frame,
     crossterm::{
-        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
+        event::{
+            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+            EnableMouseCapture, Event, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
+        },
         execute,
+        style::Colored,
     },
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Clear, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
-    },
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use std::{
     io::{self, IsTerminal},
@@ -36,9 +39,41 @@ use std::{
 use unicode_width::UnicodeWidthStr;
 
 struct TerminalGuard;
+#[derive(Default)]
+struct Interaction {
+    tree: tree::Viewport,
+    selection: selection::Selection,
+}
+
+impl Interaction {
+    fn handle_key(
+        &mut self,
+        state: &mut State,
+        key: KeyEvent,
+        bindings: &Bindings,
+        height: usize,
+        now: Instant,
+    ) -> Effects {
+        if state.prompt().is_none()
+            && !state.help()
+            && bindings.action(state.focus(), key) == Some(Action::Cancel)
+            && self.selection.clear()
+        {
+            return Effects {
+                redraw: true,
+                ..Effects::default()
+            };
+        }
+        let mut effects = self.tree.handle_key(state, key, bindings, height, now);
+        if effects.render || state.help() || state.prompt().is_some() {
+            effects.redraw |= self.selection.clear();
+        }
+        effects
+    }
+}
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
+        let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
         ratatui::restore();
     }
 }
@@ -54,10 +89,11 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     let collecting = collect::Worker::spawn(repo, mode, config.limits, config.reconcile)?;
     let degraded = &collecting.degraded;
     let mut terminal = ratatui::try_init()?;
+    let monochrome = Colored::ansi_color_disabled_memoized();
     let _guard = TerminalGuard;
-    execute!(io::stdout(), EnableBracketedPaste)?;
+    execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let mut state = State::with_whitespace(config.split, config.whitespace);
-    let mut list_state = ListState::default();
+    let mut interaction = Interaction::default();
     let mut render_needed = true;
     let mut needs_draw = true;
     let mut viewport = (0usize, 1usize);
@@ -109,9 +145,16 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                     &state,
                     &config,
                     activity.displayed(),
-                    &mut list_state,
+                    &mut interaction,
                     state.help_scroll(),
-                )
+                );
+                if monochrome {
+                    // Suppressed color commands can reset text attributes in Crossterm.
+                    // Keep backend colors at their defaults so reverse-video selection survives.
+                    for cell in &mut frame.buffer_mut().content {
+                        cell.set_fg(Color::Reset).set_bg(Color::Reset);
+                    }
+                }
             })?;
             needs_draw = false;
         }
@@ -128,17 +171,30 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
             continue;
         }
         let effects = match event::read()? {
-            Event::Resize(_, _) => Effects {
-                redraw: true,
-                render: true,
-                ..Effects::default()
-            },
+            Event::Resize(_, _) => {
+                interaction.selection.clear();
+                Effects {
+                    redraw: true,
+                    render: true,
+                    ..Effects::default()
+                }
+            }
             Event::Paste(text) => state.paste(&text, Instant::now()),
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                state.handle_key(key, &config.bindings, viewport.1, Instant::now())
+            Event::Key(key) if key.kind != KeyEventKind::Release => interaction.handle_key(
+                &mut state,
+                key,
+                &config.bindings,
+                viewport.1,
+                Instant::now(),
+            ),
+            Event::Mouse(mouse) if size.width >= 12 && size.height >= 6 => {
+                view.handle_mouse(&mut state, &config, &mut interaction, mouse)
             }
             _ => Effects::default(),
         };
+        if let Some(text) = interaction.selection.take_copy() {
+            clipboard::copy(&mut io::stdout().lock(), &text)?;
+        }
         if effects.quit {
             break;
         }
@@ -174,7 +230,7 @@ fn panes(body: Rect, sidebar: bool) -> (Rect, Rect) {
     }
 }
 
-/// Shared geometry for drawing, wrapping, and keyboard navigation.
+/// Shared geometry for drawing, wrapping, and input routing.
 struct ViewAreas {
     tree: Rect,
     diff: Rect,
@@ -185,6 +241,76 @@ struct ViewAreas {
 }
 
 impl ViewAreas {
+    fn handle_mouse(
+        &self,
+        state: &mut State,
+        config: &Config,
+        interaction: &mut Interaction,
+        mouse: MouseEvent,
+    ) -> Effects {
+        let mut redraw = interaction.selection.reconcile(state, self);
+        if state.help() || state.prompt().is_some() {
+            return Effects {
+                redraw,
+                ..Effects::default()
+            };
+        }
+        let position = (mouse.column, mouse.row).into();
+        if self.diff.contains(position)
+            && mouse.modifiers.is_empty()
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            let previous = state.scroll();
+            state.scroll_by(
+                3,
+                mouse.kind == MouseEventKind::ScrollDown,
+                self.viewport().1,
+            );
+            redraw |= state.scroll() != previous;
+        }
+        // Update drag endpoints after wheel scrolling has changed the viewport.
+        if self.diff.contains(position)
+            || !matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            )
+        {
+            redraw |= interaction.selection.handle_mouse(state, self, mouse);
+        }
+        let mut effects = if self.tree.contains(position) {
+            interaction
+                .tree
+                .handle_mouse(state, config, self.tree, mouse)
+        } else {
+            Effects::default()
+        };
+        effects.redraw |= redraw;
+        effects
+    }
+
+    /// The exact header rectangle drawn over the document, also used for hit testing.
+    fn header(&self, state: &State) -> Option<(usize, Rect)> {
+        let inner = self.diff_content;
+        let section = state
+            .document()
+            .current_file_section(state.scroll(), inner.height as usize)?;
+        let y = inner.y + section.start.saturating_sub(state.scroll()) as u16;
+        let height = FILE_HEADER_ROWS
+            .min(
+                section
+                    .end
+                    .saturating_sub(section.start.max(state.scroll())),
+            )
+            .min(inner.bottom().saturating_sub(y) as usize);
+        Some((
+            section.start,
+            Rect::new(inner.x, y, inner.width, height as u16),
+        ))
+    }
+
     fn new(area: Rect, sidebar: bool) -> Self {
         let rows = Layout::vertical([
             Constraint::Min(1),
@@ -221,7 +347,7 @@ fn draw(
     state: &State,
     config: &Config,
     activity: Activity,
-    list_state: &mut ListState,
+    interaction: &mut Interaction,
     help_scroll: usize,
 ) {
     let area = frame.area();
@@ -235,8 +361,9 @@ fn draw(
         return;
     }
     let view = ViewAreas::new(area, state.sidebar());
+    interaction.selection.reconcile(state, &view);
     let tree_divider_visible =
-        view.tree.width > 0 && tree::draw(frame, state, config, view.tree, list_state);
+        view.tree.width > 0 && tree::draw(frame, state, config, view.tree, &mut interaction.tree);
     let inner = view.diff_content;
     let rows: Vec<Line<'_>> = state
         .document()
@@ -247,26 +374,13 @@ fn draw(
         .map(|r| r.line.clone())
         .collect();
     frame.render_widget(Paragraph::new(rows).style(palette.base()), inner);
-    if let Some(section) = state
-        .document()
-        .current_file_section(state.scroll(), inner.height as usize)
-    {
-        let y = inner.y + section.start.saturating_sub(state.scroll()) as u16;
-        // Clip at file and viewport boundaries so the border cannot cover another header.
-        let height = FILE_HEADER_ROWS
-            .min(
-                section
-                    .end
-                    .saturating_sub(section.start.max(state.scroll())),
-            )
-            .min(inner.bottom().saturating_sub(y) as usize);
-        let header_area = Rect::new(inner.x, y, inner.width, height as u16);
+    if let Some((start, header_area)) = view.header(state) {
         let header: Vec<_> = state
             .document()
             .rows
             .iter()
-            .skip(section.start)
-            .take(height)
+            .skip(start)
+            .take(header_area.height as usize)
             .map(|row| row.line.clone())
             .collect();
         frame.render_widget(Paragraph::new(header).style(palette.base()), header_area);
@@ -281,6 +395,9 @@ fn draw(
             );
         }
     }
+    interaction
+        .selection
+        .draw(frame.buffer_mut(), state, &view, palette);
     let max_scroll = state
         .document()
         .rows
