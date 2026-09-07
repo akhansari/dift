@@ -256,7 +256,12 @@ fn a_partial_file_header_does_not_extend_past_the_preview() -> crate::AppResult<
     let document = preview.ok_or("Missing preview")?;
     assert!(document.partial);
     assert_eq!(document.rows.len(), 4);
-    assert_eq!(document.current_file_section(3, 7), Some(&(1..4)));
+    assert_eq!(
+        document
+            .current_file_section(3, 7)
+            .map(|section| &section.rows),
+        Some(&(1..4))
+    );
     assert_eq!(document.current_file_section(4, 7), None);
     Ok(())
 }

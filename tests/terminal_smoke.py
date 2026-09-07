@@ -4,15 +4,18 @@ import base64
 import codecs
 import errno
 import fcntl
+import json
 import mmap
 import os
 from pathlib import Path
 import pty
 import re
 import select
+import shlex
 import signal
 import struct
 import subprocess
+import sys
 import tempfile
 import termios
 import time
@@ -167,7 +170,7 @@ class Screen:
 
 
 class Session:
-    def __init__(self, cwd, config, env=None):
+    def __init__(self, cwd, config, env=None, args=()):
         self.master, self.slave = pty.openpty()
         self.original = termios.tcgetattr(self.slave)
         self.screen = Screen()
@@ -177,7 +180,9 @@ class Session:
             os.close(self.master)
             os.login_tty(self.slave)
             os.chdir(cwd)
-            os.execve(str(BINARY), [str(BINARY), "--config", str(config)], {**os.environ, "TERM": "xterm-256color", **(env or {})})
+            child_env = {**os.environ, "TERM": "xterm-256color", **(env or {})}
+            os.execve(str(BINARY), [str(BINARY), "--config", str(config), *args],
+                      {key: value for key, value in child_env.items() if value is not None})
         self.status = None
         self.raw = bytearray()
 
@@ -259,13 +264,13 @@ class TerminalSmoke(unittest.TestCase):
         (self.root / "notes.txt").write_text("untracked note\n")
         self.start_session()
 
-    def start_session(self, cwd=None, reconcile=3600):
+    def start_session(self, cwd=None, reconcile=3600, env=None, args=()):
         # Event tests must complete long before the periodic fallback can run.
         config = self.root / ".git/terminal-config.kdl"
         config.write_text(f"watch {{ reconcile-seconds {reconcile}; }}\n")
-        self.session = Session(cwd or self.root / "src", config)
+        self.session = Session(cwd or self.root / "src", config, env=env, args=args)
         self.addCleanup(self.session.close)
-        self.session.wait("Watching")
+        self.session.wait("Watching" if not args else "Snapshot")
 
     def restart_session(self, cwd=None, reconcile=3600):
         self.session.stop()
@@ -811,6 +816,329 @@ class TerminalSmoke(unittest.TestCase):
         self.assertEqual(self.session.stop(), 0)
         self.assertEqual(termios.tcgetattr(self.session.slave), self.session.original)
         self.assertIn(b"\x1b[?1049l", self.session.raw)
+
+    def fake_editor(self, exit_code=0):
+        script = self.root / ".git/fake editor.py"
+        script.write_text('''import json
+import os
+from pathlib import Path
+import sys
+import termios
+
+target = Path(sys.argv[-1].rsplit(":", 2)[0] if "--goto" in sys.argv else sys.argv[-1])
+record = Path(__file__).with_name("editor-record.json")
+previous = json.loads(record.read_text()) if record.exists() else []
+previous.append({
+    "argv": sys.argv[1:],
+    "cwd": os.getcwd(),
+    "contents": target.read_text(),
+    "canonical": bool(termios.tcgetattr(0)[3] & termios.ICANON),
+    "echo": bool(termios.tcgetattr(0)[3] & termios.ECHO),
+})
+record.write_text(json.dumps(previous))
+print("\\033[H\\033[2JEDITOR_READY " + str(len(previous)), flush=True)
+response = sys.stdin.readline().strip()
+if response == "save":
+    target.write_text("EDITOR_SAVED_CONTENT\\n")
+sys.exit(int(sys.argv[1]))
+''')
+        return shlex.join([sys.executable, str(script), str(exit_code), "argument with spaces"])
+
+    def editor_record(self):
+        return json.loads((self.root / ".git/editor-record.json").read_text())[-1]
+
+    def supported_editor(self, name):
+        self.fake_editor()
+        directory = self.root / ".git/editor tools"
+        directory.mkdir(exist_ok=True)
+        wrapper = directory / name
+        command = shlex.join([sys.executable, str(self.root / ".git/fake editor.py"),
+                              "0", "argument with spaces"])
+        wrapper.write_text(f'#!/bin/sh\nexec {command} "$@"\n')
+        wrapper.chmod(0o755)
+        return shlex.quote(str(wrapper))
+
+    def test_nvim_editor_receives_a_line_before_the_argument_delimiter(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": self.supported_editor("nvim") + " --clean --", "EDITOR": None})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"],
+                         ["0", "argument with spaces", "--clean", "+1", "--", str(self.root / "src/main.rs")])
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_helix_editor_receives_a_line_and_preserves_literal_arguments(self):
+        # Given
+        self.session.stop()
+        command = self.supported_editor("hx") + " --config 'literal $value; text'"
+        self.start_session(env={"VISUAL": command, "EDITOR": None})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"],
+                         ["0", "argument with spaces", "--config", "literal $value; text", "+1", str(self.root / "src/main.rs")])
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_vscode_editor_receives_goto_and_preserves_wait(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": self.supported_editor("code") + " --wait", "EDITOR": None})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"],
+                         ["0", "argument with spaces", "--wait", "--goto", str(self.root / "src/main.rs") + ":1:1"])
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_uppercase_o_opens_a_supported_editor_without_positioning(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": self.supported_editor("nvim"), "EDITOR": None})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("O")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"],
+                         ["0", "argument with spaces", str(self.root / "src/main.rs")])
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_editor_shell_wrappers_keep_normal_opening(self):
+        # Given
+        self.session.stop()
+        command = "env " + self.supported_editor("nvim")
+        self.start_session(env={"VISUAL": command, "EDITOR": None})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"],
+                         ["0", "argument with spaces", str(self.root / "src/main.rs")])
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_editor_shell_expansions_keep_normal_opening(self):
+        # Given
+        self.session.stop()
+        command = self.supported_editor("nvim") + ' "$DIFT_TEST_EDITOR_ARGUMENT"'
+        self.start_session(env={"VISUAL": command, "EDITOR": None,
+                                "DIFT_TEST_EDITOR_ARGUMENT": "expanded argument"})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"],
+                         ["0", "argument with spaces", "expanded argument", str(self.root / "src/main.rs")])
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_editor_position_tracks_the_visible_hunk_after_scrolling(self):
+        # Given
+        self.session.stop()
+        path = self.root / "src/main.rs"
+        lines = [f"original line {number}\n" for number in range(1, 81)]
+        path.write_text("".join(lines))
+        self.git("add", "src/main.rs")
+        self.git("commit", "-m", "many lines")
+        lines[9] = "FIRST_CHANGE\n"
+        lines[49] = "SECOND_CHANGE\n"
+        path.write_text("".join(lines))
+        self.start_session(env={"VISUAL": self.supported_editor("nvim"), "EDITOR": None})
+        self.session.resize(100, 12)
+        self.session.send("n\t\x1b[F")
+        self.session.wait("SECOND_CHANGE")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"],
+                         ["0", "argument with spaces", "+50", str(path)])
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_editor_receives_the_working_file_and_refreshes_after_saving(self):
+        # Given
+        self.session.stop()
+        command = self.fake_editor()
+        self.start_session(env={"VISUAL": command, "EDITOR": "missing-fallback-editor"})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        self.session.wait("EDITOR_READY 1")
+        record = self.editor_record()
+        self.session.send("save\n")
+        # Then
+        self.session.wait("EDITOR_SAVED_CONTENT")
+        self.session.wait("Watching")
+        self.session.wait_selection("main.rs")
+        self.assertEqual(record["argv"], ["0", "argument with spaces", str(self.root / "src/main.rs")])
+        self.assertEqual(record["cwd"], str(self.root))
+        self.assertIn('"working"', record["contents"])
+        self.assertTrue(record["canonical"])
+        self.assertTrue(record["echo"])
+        self.assertFalse(termios.tcgetattr(self.session.slave)[3] & termios.ICANON)
+        self.assertIn(b"\x1b[?2004l", self.session.raw)
+        self.assertIn(b"\x1b[?1049l", self.session.raw)
+        self.assertEqual(self.session.stop(), 0)
+        self.assertEqual(termios.tcgetattr(self.session.slave), self.session.original)
+
+    def test_blank_visual_falls_back_to_editor(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": " \t ", "EDITOR": self.fake_editor()})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"][-1], str(self.root / "src/main.rs"))
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_unset_visual_falls_back_to_editor(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": None, "EDITOR": self.fake_editor()})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"][-1], str(self.root / "src/main.rs"))
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_missing_editor_configuration_shows_a_hint(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": None, "EDITOR": None})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("Set VISUAL or EDITOR to open files")
+        self.assertFalse(termios.tcgetattr(self.session.slave)[3] & termios.ICANON)
+
+    def test_editor_launch_failure_returns_to_dift_without_falling_back(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": str(self.root / ".git/missing-editor"),
+                                "EDITOR": self.fake_editor()})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("Cannot start $VISUAL")
+        self.assertFalse((self.root / ".git/editor-record.json").exists())
+        self.assertFalse(termios.tcgetattr(self.session.slave)[3] & termios.ICANON)
+        self.assertEqual(self.session.stop(), 0)
+        self.assertEqual(termios.tcgetattr(self.session.slave), self.session.original)
+
+    def test_unsuccessful_editor_exit_restores_the_view(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": self.fake_editor(exit_code=7), "EDITOR": None})
+        self.session.send("no")
+        self.session.wait("EDITOR_READY 1")
+        # When
+        self.session.send("close\n")
+        # Then
+        self.session.wait("$VISUAL exited unsuccessfully")
+        self.session.wait_selection("main.rs")
+        self.assertFalse(termios.tcgetattr(self.session.slave)[3] & termios.ICANON)
+        self.assertEqual(self.session.stop(), 0)
+        self.assertEqual(termios.tcgetattr(self.session.slave), self.session.original)
+
+    def test_editor_paths_preserve_spaces_and_shell_metacharacters(self):
+        # Given
+        self.session.stop()
+        path = self.root / "src/-odd '$(touch INJECTED)' ; name.rs"
+        path.write_text("SPECIAL_PATH_CONTENT\n")
+        self.start_session(env={"VISUAL": self.supported_editor("nvim"), "EDITOR": None})
+        self.session.send("f-odd\rn")
+        self.session.wait("SPECIAL_PATH_CONTENT")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertEqual(self.editor_record()["argv"][-1], str(path))
+        self.assertFalse((self.root / "INJECTED").exists())
+        self.session.send("close\n")
+        self.session.wait("Watching")
+
+    def test_repeated_editor_launches_survive_a_resize(self):
+        # Given
+        self.session.stop()
+        self.start_session(env={"VISUAL": self.fake_editor(), "EDITOR": None})
+        self.session.send("no")
+        self.session.wait("EDITOR_READY 1")
+        self.session.send("close\n")
+        self.session.wait("Watching")
+        # When
+        self.session.send("o")
+        self.session.wait("EDITOR_READY 2")
+        self.session.resize(80, 25)
+        self.session.send("close\n")
+        # Then
+        self.session.wait_selection("main.rs")
+        self.session.wait("Watching")
+        self.assertEqual(self.session.stop(), 0)
+        self.assertEqual(termios.tcgetattr(self.session.slave), self.session.original)
+
+    def test_comparison_editor_opens_local_contents(self):
+        # Given
+        self.session.stop()
+        self.git("commit", "-m", "staged version")
+        self.start_session(env={"VISUAL": self.fake_editor(), "EDITOR": None},
+                           args=("diff", "HEAD~1", "HEAD"))
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("EDITOR_READY 1")
+        self.assertIn('"working"', self.editor_record()["contents"])
+        self.session.send("save\n")
+        self.session.wait("Snapshot")
+        self.assertNotIn("EDITOR_SAVED_CONTENT", self.session.screen.text)
+
+    def test_deleted_files_show_a_notice_without_starting_the_editor(self):
+        # Given
+        self.session.stop()
+        (self.root / "src/main.rs").unlink()
+        self.start_session(env={"VISUAL": self.fake_editor(), "EDITOR": None})
+        self.session.send("n")
+        self.session.wait_selection("main.rs")
+        # When
+        self.session.send("o")
+        # Then
+        self.session.wait("Cannot open")
+        self.assertFalse((self.root / ".git/editor-record.json").exists())
 
     def test_idle_view_does_not_repeatedly_write_terminal_frames(self):
         self.session.advance(0.1)

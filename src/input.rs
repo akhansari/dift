@@ -71,6 +71,8 @@ pub enum Action {
     Accept,
     Help,
     Refresh,
+    OpenEditor,
+    OpenEditorPlain,
     CursorLeft,
     CursorRight,
     CursorHome,
@@ -82,7 +84,7 @@ pub enum Action {
     ClearAfter,
 }
 impl Action {
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 36] = [
         Self::Quit,
         Self::Sidebar,
         Self::Layout,
@@ -108,6 +110,8 @@ impl Action {
         Self::Accept,
         Self::Help,
         Self::Refresh,
+        Self::OpenEditor,
+        Self::OpenEditorPlain,
         Self::CursorLeft,
         Self::CursorRight,
         Self::CursorHome,
@@ -145,6 +149,8 @@ impl Action {
             Self::Accept => "accept",
             Self::Help => "help",
             Self::Refresh => "refresh",
+            Self::OpenEditor => "open-editor",
+            Self::OpenEditorPlain => "open-editor-plain",
             Self::CursorLeft => "cursor-left",
             Self::CursorRight => "cursor-right",
             Self::CursorHome => "cursor-home",
@@ -324,6 +330,8 @@ impl Bindings {
             (Action::Accept, "enter"),
             (Action::Help, "?"),
             (Action::Refresh, "r"),
+            (Action::OpenEditor, "o"),
+            (Action::OpenEditorPlain, "O"),
         ];
         let tree = [(Action::Left, "left h"), (Action::Right, "right l")];
         let input = [

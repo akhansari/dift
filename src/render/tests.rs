@@ -1,6 +1,7 @@
 use super::*;
 use crate::model::Hunk;
 
+mod editor;
 mod headers;
 mod refinement;
 

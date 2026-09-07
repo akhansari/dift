@@ -92,13 +92,28 @@ pub struct Hit {
     pub row: usize,
 }
 
+/// A rendered file's rows and its working-tree path, including files without source lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSection {
+    pub rows: Range<usize>,
+    pub path: PathBuf,
+}
+
+/// Rendered hunk rows and the first change's destination in the new source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HunkSection {
+    pub rows: Range<usize>,
+    pub first_change_line: Option<usize>,
+}
+
 /// Rendered diff rows and metadata used by the UI.
 #[derive(Debug, Default, Clone)]
 pub struct Document {
     /// Terminal rows in display order.
     pub rows: Vec<Arc<Row>>,
     /// Ordered file sections, starting at each header and excluding category rows.
-    pub file_sections: Vec<Range<usize>>,
+    pub file_sections: Vec<FileSection>,
+    pub hunk_sections: Vec<HunkSection>,
     /// Search matches in document order.
     pub hits: Vec<Hit>,
     /// Number of oversized changes whose contents were omitted.
@@ -108,13 +123,45 @@ pub struct Document {
 }
 impl Document {
     /// File at the top, or the first file entering the viewport.
-    pub fn current_file_section(&self, scroll: usize, height: usize) -> Option<&Range<usize>> {
+    pub fn current_file_section(&self, scroll: usize, height: usize) -> Option<&FileSection> {
         let index = self
             .file_sections
-            .partition_point(|section| section.end <= scroll);
+            .partition_point(|section| section.rows.end <= scroll);
         self.file_sections
             .get(index)
-            .filter(|section| height > 0 && section.start < scroll.saturating_add(height))
+            .filter(|section| height > 0 && section.rows.start < scroll.saturating_add(height))
+    }
+
+    /// Document rows covered by the current file's normal or sticky header.
+    pub fn visible_file_header(
+        &self,
+        scroll: usize,
+        height: usize,
+    ) -> Option<(&FileSection, Range<usize>)> {
+        let section = self.current_file_section(scroll, height)?;
+        let start = section.rows.start.max(scroll);
+        let end = start
+            .saturating_add(FILE_HEADER_ROWS)
+            .min(section.rows.end)
+            .min(scroll.saturating_add(height));
+        Some((section, start..end))
+    }
+
+    pub fn visible_hunk_line(
+        &self,
+        path: &std::path::Path,
+        scroll: usize,
+        height: usize,
+    ) -> Option<usize> {
+        let (file, header) = self.visible_file_header(scroll, height)?;
+        if file.path != path {
+            return None;
+        }
+        let end = file.rows.end.min(scroll.saturating_add(height));
+        self.hunk_sections
+            .iter()
+            .find(|hunk| header.end < end && hunk.rows.end > header.end && hunk.rows.start < end)
+            .and_then(|hunk| hunk.first_change_line)
     }
 
     pub fn reanchored_scroll(&self, previous: &Self, row: usize) -> usize {
@@ -323,6 +370,7 @@ struct CachedLayout {
 impl CachedLayout {
     fn bytes(&self) -> usize {
         self.prepared.bytes()
+            + self.document.hunk_sections.len() * size_of::<HunkSection>()
             + self
                 .document
                 .rows
@@ -714,7 +762,10 @@ fn compose(
         });
         result.rows.extend(file.rows.iter().take(count).cloned());
         if count > 0 {
-            result.file_sections.push(offset..offset + count);
+            result.file_sections.push(FileSection {
+                rows: offset..offset + count,
+                path: change.path.clone(),
+            });
         }
         result.hits.extend(
             file.hits
@@ -722,6 +773,15 @@ fn compose(
                 .filter(|hit| hit.row < count)
                 .map(|hit| Hit {
                     row: offset + hit.row,
+                }),
+        );
+        result.hunk_sections.extend(
+            file.hunk_sections
+                .iter()
+                .filter(|hunk| hunk.rows.start < count)
+                .map(|hunk| HunkSection {
+                    rows: offset + hunk.rows.start..offset + hunk.rows.end.min(count),
+                    first_change_line: hunk.first_change_line,
                 }),
         );
         result.excluded += file.excluded;
@@ -738,7 +798,7 @@ fn compose(
     }) {
         result.rows.pop();
         if let Some(section) = result.file_sections.last_mut() {
-            section.end = section.end.min(result.rows.len());
+            section.rows.end = section.rows.end.min(result.rows.len());
         }
     }
     if result.rows.is_empty() {

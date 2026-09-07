@@ -11,6 +11,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Whether an external editor should receive a position from the displayed diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorPosition {
+    VisibleHunk,
+    Default,
+}
+
 /// Work the terminal loop must perform after an interactive transition.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Effects {
@@ -18,6 +25,7 @@ pub struct Effects {
     pub render: bool,
     pub collect: bool,
     pub quit: bool,
+    pub open_editor: Option<EditorPosition>,
 }
 impl Effects {
     fn draw(render: bool) -> Self {
@@ -66,7 +74,7 @@ impl State {
         Effects::draw(hidden)
     }
 
-    fn show_toast(&mut self, message: String, now: Instant) {
+    pub(crate) fn show_toast(&mut self, message: String, now: Instant) {
         self.toast = Some(Toast {
             message,
             expires_at: now + TOAST_DURATION,
@@ -321,6 +329,8 @@ impl State {
                 }
             }
             Action::Refresh => effects.collect = true,
+            Action::OpenEditor => effects.open_editor = Some(EditorPosition::VisibleHunk),
+            Action::OpenEditorPlain => effects.open_editor = Some(EditorPosition::Default),
             Action::Help => {
                 self.help = true;
                 self.help_scroll = 0;

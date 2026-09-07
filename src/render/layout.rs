@@ -464,6 +464,11 @@ pub(super) fn file(
     }
     for (hunk_index, hunk) in change.hunks.iter().enumerate() {
         cancel.check()?;
+        finish_hunk(&mut document);
+        document.hunk_sections.push(HunkSection {
+            rows: document.rows.len()..document.rows.len(),
+            first_change_line: first_change_line(hunk),
+        });
         push_header(
             &mut document,
             &format!(" {}", hunk.header),
@@ -564,15 +569,38 @@ pub(super) fn file(
     if reached_limit(&mut document, limit) {
         return Ok(document);
     }
+    finish_hunk(&mut document);
     push_header(&mut document, "", palette.base());
     Ok(document)
 }
 
 fn reached_limit(document: &mut Document, limit: Option<usize>) -> bool {
     if limit.is_some_and(|limit| document.rows.len() >= limit) {
+        finish_hunk(document);
         document.partial = true;
         true
     } else {
         false
     }
+}
+
+fn finish_hunk(document: &mut Document) {
+    if let Some(hunk) = document.hunk_sections.last_mut() {
+        hunk.rows.end = document.rows.len();
+    }
+}
+
+fn first_change_line(hunk: &crate::model::Hunk) -> Option<usize> {
+    let first = hunk
+        .lines
+        .iter()
+        .position(|line| line.kind != LineKind::Context)?;
+    Some(
+        hunk.lines[first..]
+            .iter()
+            .find_map(|line| line.new)
+            .or_else(|| hunk.lines[..first].iter().rev().find_map(|line| line.new))
+            .unwrap_or(1)
+            .max(1),
+    )
 }

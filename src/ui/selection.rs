@@ -101,7 +101,7 @@ impl Selection {
                 let Some(section) = document
                     .file_sections
                     .iter()
-                    .find(|section| section.contains(&point.row))
+                    .find(|section| section.rows.contains(&point.row))
                 else {
                     return cleared;
                 };
@@ -109,7 +109,7 @@ impl Selection {
                     document: Arc::clone(document),
                     selected_path: state.selection().into(),
                     area: view.diff_content,
-                    section: section.clone(),
+                    section: section.rows.clone(),
                     side: region.side,
                     start: point,
                     end: point,

@@ -9,7 +9,7 @@ use collection::CollectionState;
 use diff::DiffState;
 use tree::TreeIndex;
 pub use tree::TreeRow;
-pub use update::Effects;
+pub use update::{EditorPosition, Effects};
 
 use crate::{
     config::Whitespace,
@@ -30,6 +30,13 @@ const TOAST_DURATION: Duration = Duration::from_secs(3);
 struct Toast {
     message: String,
     expires_at: Instant,
+}
+
+/// A working-tree file and an optional one-based editor destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorTarget<'a> {
+    pub path: &'a Path,
+    pub line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +121,34 @@ impl State {
     }
     pub fn document(&self) -> &Document {
         &self.diff.document
+    }
+    /// Working-tree path selected in the tree or identified by the visible diff header.
+    pub fn active_file(&self, height: usize) -> Option<&Path> {
+        if self.focus == Scope::Tree {
+            self.tree
+                .rows(false)
+                .iter()
+                .find(|row| row.path == self.selection && !row.directory)
+                .map(|row| row.path.as_path())
+        } else {
+            self.document()
+                .current_file_section(self.scroll(), height)
+                .map(|section| section.path.as_path())
+        }
+    }
+    pub fn editor_target(
+        &self,
+        height: usize,
+        position: EditorPosition,
+    ) -> Option<EditorTarget<'_>> {
+        let path = self.active_file(height)?;
+        let line = (position == EditorPosition::VisibleHunk)
+            .then(|| {
+                self.document()
+                    .visible_hunk_line(path, self.scroll(), height)
+            })
+            .flatten();
+        Some(EditorTarget { path, line })
     }
     pub(crate) fn shared_document(&self) -> &Arc<Document> {
         &self.diff.document

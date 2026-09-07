@@ -1,6 +1,7 @@
 mod activity;
 mod clipboard;
 mod collect;
+mod editor;
 #[cfg(test)]
 mod fixtures;
 mod selection;
@@ -13,7 +14,7 @@ use crate::{
     config::Config,
     git::{Mode, Repository},
     input::{Action, Bindings, Scope},
-    render::{FILE_HEADER_ROWS, Palette, worker::RenderWorker},
+    render::{Palette, worker::RenderWorker},
     state::{Effects, PromptKind, State},
 };
 use activity::{Activity, ActivityStatus};
@@ -87,6 +88,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     }
     let render_worker = RenderWorker::spawn(config.clone())?;
     let watching = matches!(mode, Mode::Watch);
+    let root = repo.root.clone();
     let collecting = collect::Worker::spawn(repo, mode, config.limits, config.reconcile)?;
     let degraded = &collecting.degraded;
     let mut terminal = ratatui::try_init()?;
@@ -199,6 +201,28 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         }
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
+        if let Some(position) = effects.open_editor {
+            let result = match editor::EditorCommand::prepare(
+                &root,
+                state.editor_target(viewport.1, position),
+                std::env::var_os("VISUAL"),
+                std::env::var_os("EDITOR"),
+            ) {
+                Ok(command) => {
+                    interaction.selection.clear();
+                    let result = command.open(&mut terminal)?;
+                    if watching {
+                        collecting.request(state.collection_request())?;
+                    }
+                    result
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                state.show_toast(error.to_string(), Instant::now());
+            }
+            needs_draw = true;
+        }
         if effects.collect {
             collecting.request(state.collection_request())?;
         }
@@ -302,19 +326,13 @@ impl ViewAreas {
     /// The exact header rectangle drawn over the document, also used for hit testing.
     fn header(&self, state: &State) -> Option<(usize, Rect)> {
         let inner = self.diff_content;
-        let section = state
+        let (section, header) = state
             .document()
-            .current_file_section(state.scroll(), inner.height as usize)?;
-        let y = inner.y + section.start.saturating_sub(state.scroll()) as u16;
-        let height = FILE_HEADER_ROWS
-            .min(
-                section
-                    .end
-                    .saturating_sub(section.start.max(state.scroll())),
-            )
-            .min(inner.bottom().saturating_sub(y) as usize);
+            .visible_file_header(state.scroll(), inner.height as usize)?;
+        let y = inner.y + header.start.saturating_sub(state.scroll()) as u16;
+        let height = header.len();
         Some((
-            section.start,
+            section.rows.start,
             Rect::new(inner.x, y, inner.width, height as u16),
         ))
     }
