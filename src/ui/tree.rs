@@ -268,11 +268,7 @@ pub(super) fn draw(
                 .track_symbol(Some("│"))
                 .thumb_symbol("┃")
                 .track_style(palette.base().fg(palette.muted))
-                .thumb_style(palette.base().fg(if focused {
-                    palette.accent
-                } else {
-                    palette.muted
-                })),
+                .thumb_style(palette.base().fg(palette.accent)),
             Rect {
                 x: area.x,
                 width: area.width,
