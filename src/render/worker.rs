@@ -22,6 +22,8 @@ pub struct RenderRequest {
     pub width: usize,
     /// Whether to lay out old and new lines side by side.
     pub split: bool,
+    /// Whether to display source line number columns.
+    pub show_line_numbers: bool,
     /// Search query to highlight in the rendered text.
     pub query: String,
     /// Initial preview row limit; zero requests a full preview.
@@ -78,6 +80,7 @@ impl RenderWorker {
                         selected: &request.selected,
                         width: request.width,
                         split: request.split,
+                        show_line_numbers: request.show_line_numbers,
                         query: &request.query,
                         preview_rows: request.preview_rows,
                     };

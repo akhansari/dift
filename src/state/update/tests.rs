@@ -521,3 +521,81 @@ fn a_failed_collection_retains_the_document_and_allows_retry() {
     assert!(!state.collecting());
     assert_eq!(state.document().rows.len(), 3);
 }
+
+#[test]
+fn line_numbers_start_visible() {
+    // Given
+    let mut state = State::new(false);
+    // When
+    let request = state.render_request(80, 20);
+    // Then
+    assert!(request.show_line_numbers);
+}
+
+#[test]
+fn line_number_shortcut_hides_numbers_from_tree_focus() {
+    // Given
+    let mut state = State::new(false);
+    // When
+    let effects = state.handle_key(
+        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::SHIFT),
+        &Bindings::defaults(),
+        20,
+        Instant::now(),
+    );
+    // Then
+    assert!(!state.render_request(80, 20).show_line_numbers);
+    assert!(effects.render);
+    assert!(!effects.collect);
+}
+
+#[test]
+fn line_number_shortcut_restores_numbers_from_diff_focus() {
+    // Given
+    let mut state = State::new(false);
+    state.action(Action::LineNumbers, 20, Instant::now());
+    state.action(Action::Sidebar, 20, Instant::now());
+    // When
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE),
+        &Bindings::defaults(),
+        20,
+        Instant::now(),
+    );
+    // Then
+    assert!(state.render_request(80, 20).show_line_numbers);
+}
+
+#[test]
+fn line_number_shortcut_remains_text_in_search_prompt() {
+    // Given
+    let mut state = State::new(false);
+    state.action(Action::Search, 20, Instant::now());
+    // When
+    state.handle_key(
+        KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT),
+        &Bindings::defaults(),
+        20,
+        Instant::now(),
+    );
+    // Then
+    assert!(state.render_request(80, 20).show_line_numbers);
+    assert_eq!(
+        state.prompt().map(|prompt| prompt.editor().text()),
+        Some("L")
+    );
+}
+
+#[test]
+fn hidden_line_numbers_survive_layout_and_snapshot_changes() {
+    // Given
+    let mut state = State::new(false);
+    state.action(Action::LineNumbers, 20, Instant::now());
+    // When
+    state.action(Action::Layout, 20, Instant::now());
+    state.update_snapshot(Snapshot::default());
+    // Then
+    let request = state.render_request(80, 20);
+    assert!(!request.show_line_numbers);
+    assert!(request.split);
+}

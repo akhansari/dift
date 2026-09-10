@@ -600,3 +600,27 @@ fn unknown_binding_operations_are_rejected_before_applying_bindings() {
         matches!(result, Err(ConfigError::Validation(ValidationError::UnknownBindingOperation { operation })) if operation == "append")
     );
 }
+
+#[test]
+fn line_number_toggle_binding_can_be_replaced() -> Result<(), ConfigError> {
+    // Given
+    let source = r#"keybindings { global { toggle-line-numbers "alt-l"; }; }"#;
+    // When
+    let config = Config::parse(source)?;
+    // Then
+    assert_eq!(
+        config.bindings.action(
+            Scope::Tree,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT)
+        ),
+        Some(Action::LineNumbers)
+    );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Diff,
+            KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE)
+        ),
+        None
+    );
+    Ok(())
+}

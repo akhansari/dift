@@ -348,6 +348,8 @@ pub struct RenderSpec<'a> {
     pub width: usize,
     /// Whether to lay out old and new lines side by side.
     pub split: bool,
+    /// Whether to display source line number columns.
+    pub show_line_numbers: bool,
     /// Search query to highlight in the rendered text.
     pub query: &'a str,
     /// Initial preview row limit; zero requests a full preview.
@@ -372,6 +374,7 @@ struct CachedLayout {
     prepared: Arc<Prepared>,
     width: usize,
     split: bool,
+    show_line_numbers: bool,
     query: String,
     enriched: bool,
     document: Arc<Document>,
@@ -472,6 +475,7 @@ impl Renderer {
                 selected,
                 width,
                 split,
+                show_line_numbers: true,
                 query,
                 preview_rows: 0,
             },
@@ -676,6 +680,7 @@ impl Renderer {
                 && entry.prepared.change.as_ref() == change
                 && entry.width == spec.width.max(4)
                 && entry.split == spec.split
+                && entry.show_line_numbers == spec.show_line_numbers
                 && entry.query == spec.query
                 && entry.enriched == enriched
         })?;
@@ -697,6 +702,7 @@ impl Renderer {
             prepared,
             width: spec.width.max(4),
             split: spec.split,
+            show_line_numbers: spec.show_line_numbers,
             query: spec.query.into(),
             enriched,
             document,

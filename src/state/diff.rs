@@ -23,6 +23,7 @@ pub(super) struct DiffState {
     displayed: Displayed,
     pub(super) search: String,
     pub(super) split: bool,
+    pub(super) show_line_numbers: bool,
     /// Zero-based document row at the top of the viewport.
     pub(super) scroll: usize,
     pub(super) document: Arc<Document>,
@@ -38,6 +39,7 @@ impl DiffState {
     pub(super) fn new(split: bool) -> Self {
         Self {
             split,
+            show_line_numbers: true,
             ..Self::default()
         }
     }
@@ -72,6 +74,7 @@ impl DiffState {
             selected,
             width,
             split: self.split,
+            show_line_numbers: self.show_line_numbers,
             query: self.search.clone(),
             // A prefix preview cannot preserve an anchor beyond that prefix.
             preview_rows: if self.displayed.selection == selection && self.scroll > 0 {

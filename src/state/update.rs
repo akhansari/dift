@@ -254,6 +254,10 @@ impl State {
                 self.diff.split = !self.diff.split;
                 effects.render = true;
             }
+            Action::LineNumbers => {
+                self.diff.show_line_numbers = !self.diff.show_line_numbers;
+                effects.render = true;
+            }
             Action::Whitespace => {
                 self.collection.toggle_whitespace();
                 effects.collect = true;

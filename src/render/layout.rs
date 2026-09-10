@@ -89,6 +89,7 @@ struct LayoutContext<'a> {
     path: &'a Arc<PathBuf>,
     width: usize,
     query: &'a str,
+    show_line_numbers: bool,
     palette: Palette,
     cancel: &'a Cancellation,
 }
@@ -130,7 +131,9 @@ fn cells(
         .len()
         .max(number_text(source.new).len())
         .max(5);
-    let prefix = if unified && width >= 2 * digits + 10 {
+    let prefix = if !context.show_line_numbers {
+        format!("{sign} ")
+    } else if unified && width >= 2 * digits + 10 {
         format!(
             "{:>digits$} {:>digits$} {sign} ",
             number_text(source.old),
@@ -455,6 +458,7 @@ pub(super) fn file(
         path: &path,
         width,
         query,
+        show_line_numbers: spec.show_line_numbers,
         palette,
         cancel,
     };

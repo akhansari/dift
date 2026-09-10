@@ -792,3 +792,19 @@ fn escaped_control_character_copies_its_source_byte() -> AppResult<()> {
     );
     Ok(())
 }
+
+#[test]
+fn selection_uses_code_coordinates_with_hidden_line_numbers() -> AppResult<()> {
+    // Given
+    let mut viewer = Viewer::code(&["alpha beta"])?;
+    viewer.state.action(Action::LineNumbers, 17, Instant::now());
+    prepare(&mut viewer.state, 100, 20)?;
+    viewer.draw()?;
+    let start = viewer.at("alpha", 2)?;
+    let end = viewer.at("alpha", 4)?;
+    // When
+    viewer.select(start, end)?;
+    // Then
+    assert_eq!(viewer.highlighted(), ["pha"]);
+    Ok(())
+}

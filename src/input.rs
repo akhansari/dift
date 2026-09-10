@@ -49,6 +49,7 @@ pub enum Action {
     Quit,
     Sidebar,
     Layout,
+    LineNumbers,
     Whitespace,
     Focus,
     NextFile,
@@ -86,10 +87,11 @@ pub enum Action {
     ClearAfter,
 }
 impl Action {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::Quit,
         Self::Sidebar,
         Self::Layout,
+        Self::LineNumbers,
         Self::Whitespace,
         Self::Focus,
         Self::NextFile,
@@ -131,6 +133,7 @@ impl Action {
             Self::Quit => "quit",
             Self::Sidebar => "toggle-sidebar",
             Self::Layout => "toggle-layout",
+            Self::LineNumbers => "toggle-line-numbers",
             Self::Whitespace => "toggle-whitespace",
             Self::Focus => "switch-focus",
             Self::NextFile => "next-file",
@@ -317,6 +320,7 @@ impl Bindings {
             (Action::Quit, "q"),
             (Action::Sidebar, "e"),
             (Action::Layout, "s"),
+            (Action::LineNumbers, "L"),
             (Action::Whitespace, "w"),
             (Action::Focus, "tab shift-tab"),
             (Action::NextFile, "n"),

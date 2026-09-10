@@ -63,12 +63,22 @@ fn prepare(state: &mut State, width: u16, height: u16) -> AppResult<()> {
     let view = ViewAreas::new(Rect::new(0, 0, width, height), state.sidebar());
     let (width, height) = view.viewport();
     let request = state.render_request(width, height);
-    let document = Renderer::new(Config::default())?.document(
-        &request.snapshot,
-        &request.selected,
-        request.width,
-        request.split,
-        &request.query,
+    let mut document = Default::default();
+    Renderer::new(Config::default())?.render_progressive(
+        crate::render::RenderSpec {
+            snapshot: &request.snapshot,
+            selected: &request.selected,
+            width: request.width,
+            split: request.split,
+            show_line_numbers: request.show_line_numbers,
+            query: &request.query,
+            preview_rows: 0,
+        },
+        &crate::render::Cancellation::default(),
+        |update| {
+            document = update.document;
+            true
+        },
     )?;
     state.apply_render(
         RenderResult {
@@ -656,6 +666,7 @@ fn help_lists_the_find_binding() -> AppResult<()> {
     let mut state = state_with("main.rs", 1);
     state.action(Action::Help, 8, Instant::now());
     state.action(Action::PageDown, 8, Instant::now());
+    state.action(Action::Down, 8, Instant::now());
     // When
     let buffer = render(&state, &Config::default(), 120, 20)?;
     // Then
@@ -742,5 +753,21 @@ fn help_hides_the_active_toast() -> AppResult<()> {
     assert_eq!(buffer[(119, 6)].symbol(), " ");
     assert!(!line(&buffer, 7).contains("Whitespace:"));
     assert!(line(&buffer, 1).contains("Keybindings · scroll to explore"));
+    Ok(())
+}
+
+#[test]
+fn help_lists_the_line_number_toggle() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 1);
+    state.action(Action::Help, 8, Instant::now());
+    // When
+    let buffer = render(&state, &Config::default(), 120, 20)?;
+    // Then
+    assert!(
+        (0..20)
+            .map(|y| line(&buffer, y))
+            .any(|row| row.contains("shift-l") && row.contains("toggle-line-numbers"))
+    );
     Ok(())
 }

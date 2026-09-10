@@ -92,6 +92,7 @@ fn measure(
             selected: &[0],
             width,
             split,
+            show_line_numbers: true,
             query,
             preview_rows: 64,
         },
