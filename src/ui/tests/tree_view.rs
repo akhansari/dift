@@ -8,15 +8,34 @@ mod activity;
 mod mouse;
 
 fn state_with(files: &[(&str, Category)]) -> State {
+    state_with_statuses(
+        &files
+            .iter()
+            .map(|(path, category)| {
+                (
+                    *path,
+                    *category,
+                    if *category == Category::Untracked {
+                        '?'
+                    } else {
+                        'M'
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn state_with_statuses(files: &[(&str, Category, char)]) -> State {
     let mut state = State::new(false);
     state.update_snapshot(Snapshot {
         changes: files
             .iter()
-            .map(|(path, category)| Change {
+            .map(|(path, category, status)| Change {
                 path: path.into(),
                 old_path: None,
                 category: *category,
-                status: 'M',
+                status: *status,
                 hunks: Vec::new(),
                 summary: None,
                 oversized: false,
@@ -74,9 +93,11 @@ fn compact_rows_align_counts_and_badges_without_icons() -> crate::AppResult<()> 
     assert!(line(&buffer, 0).contains("All changes"));
     assert_eq!(buffer[(31, 0)].symbol(), "3");
     assert_eq!(line(&buffer, 1), " │ ▾ src                       2 │");
-    assert_eq!(line(&buffer, 3), " │     ui.rs                  US │");
-    assert_eq!(buffer[(31, 2)].symbol(), "U");
+    assert_eq!(line(&buffer, 3), " │     ui.rs                  MM │");
+    assert_eq!(buffer[(31, 2)].symbol(), "M");
     assert_eq!(buffer[(31, 4)].symbol(), "?");
+    assert_eq!(buffer[(30, 3)].fg, Palette::new(false).removed_foreground);
+    assert_eq!(buffer[(31, 3)].fg, Palette::new(false).added_foreground);
     Ok(())
 }
 
@@ -96,9 +117,9 @@ fn nerd_font_icons_fit_the_same_badge_column() -> crate::AppResult<()> {
     assert_eq!(line(&buffer, 1), " │  src                       2 │");
     assert_eq!(buffer[(5, 2)].symbol(), "");
     assert!(line(&buffer, 2).contains(" state.rs"));
-    assert_eq!(buffer[(31, 2)].symbol(), "U");
-    assert_eq!(buffer[(30, 3)].symbol(), "U");
-    assert_eq!(buffer[(31, 3)].symbol(), "S");
+    assert_eq!(buffer[(31, 2)].symbol(), "M");
+    assert_eq!(buffer[(30, 3)].symbol(), "M");
+    assert_eq!(buffer[(31, 3)].symbol(), "M");
     Ok(())
 }
 
@@ -139,6 +160,10 @@ fn selected_files_stay_visible_when_the_tree_loses_focus() -> crate::AppResult<(
     assert_ne!(focused[(11, 2)].bg, unfocused[(11, 2)].bg);
     assert_eq!(unfocused[(11, 2)].bg, Palette::new(false).panel);
     assert_eq!(focused[(31, 2)].fg, unfocused[(31, 2)].fg);
+    assert_eq!(
+        unfocused[(31, 2)].fg,
+        Palette::new(false).removed_foreground
+    );
     assert_eq!(focused[(3, 2)].symbol(), "│");
     assert_eq!(unfocused[(3, 2)].symbol(), "│");
     assert_eq!(unfocused[(1, 2)].symbol(), " ");
@@ -158,7 +183,7 @@ fn deep_paths_give_space_to_the_filename_and_preserve_its_extension() -> crate::
         "{}",
         line(&buffer, 7)
     );
-    assert_eq!(buffer[(13, 7)].symbol(), "U");
+    assert_eq!(buffer[(13, 7)].symbol(), "M");
     assert_eq!(buffer[(1, 7)].symbol(), " ");
     Ok(())
 }
@@ -173,7 +198,7 @@ fn unicode_names_keep_combining_marks_and_wide_characters_intact() -> crate::App
     assert!(line(&buffer, 1).contains("e\u{301}界"));
     assert!(line(&buffer, 1).contains("…"));
     assert!(line(&buffer, 1).contains(".rs"));
-    assert_eq!(buffer[(13, 1)].symbol(), "U");
+    assert_eq!(buffer[(13, 1)].symbol(), "M");
     Ok(())
 }
 
@@ -224,7 +249,7 @@ fn tiny_panes_omit_prefixes_before_losing_badges() -> crate::AppResult<()> {
     // When
     let buffer = render(&state, &config, 8, 6)?;
     // Then
-    assert_eq!(line(&buffer, 1), " l… US │");
+    assert_eq!(line(&buffer, 1), " l… MM │");
     Ok(())
 }
 
@@ -269,7 +294,7 @@ fn the_light_palette_preserves_selected_badge_colors() -> crate::AppResult<()> {
     let buffer = render(&state, &config, 34, 8)?;
     // Then
     assert_eq!(buffer[(0, 2)].symbol(), "▎");
-    assert_ne!(buffer[(31, 2)].fg, buffer[(10, 2)].fg);
+    assert_eq!(buffer[(31, 2)].fg, Palette::new(true).removed_foreground);
     assert_ne!(buffer[(10, 2)].bg, Palette::new(true).background);
     Ok(())
 }
@@ -348,7 +373,7 @@ fn a_nested_file_guides_only_its_immediate_parent() -> crate::AppResult<()> {
     assert_eq!(buffer[(5, 3)].symbol(), "│");
     assert_eq!(buffer[(3, 4)].symbol(), " ");
     assert_eq!(buffer[(3, 6)].symbol(), " ");
-    assert_eq!(buffer[(31, 3)].symbol(), "U");
+    assert_eq!(buffer[(31, 3)].symbol(), "M");
     Ok(())
 }
 
@@ -392,5 +417,176 @@ fn filtering_keeps_the_selected_files_parent_guide() -> crate::AppResult<()> {
     assert_eq!(buffer[(3, 2)].symbol(), "│");
     assert_eq!(buffer[(1, 2)].symbol(), " ");
     assert!(line(&buffer, 2).contains("state.rs"));
+    Ok(())
+}
+
+macro_rules! status_badge_test {
+    ($name:ident, $category:ident, $status:literal, $light:literal, $color:ident) => {
+        #[test]
+        fn $name() -> crate::AppResult<()> {
+            // Given
+            let state = state_with_statuses(&[("file.rs", Category::$category, $status)]);
+            let config = Config {
+                light: $light,
+                ..Config::default()
+            };
+            // When
+            let buffer = render(&state, &config, 34, 6)?;
+            // Then
+            assert_eq!(buffer[(31, 1)].symbol(), $status.to_string());
+            assert_eq!(buffer[(31, 1)].fg, Palette::new($light).$color);
+            Ok(())
+        }
+    };
+}
+status_badge_test!(
+    dark_unstaged_a_badge,
+    Unstaged,
+    'A',
+    false,
+    removed_foreground
+);
+status_badge_test!(
+    dark_unstaged_m_badge,
+    Unstaged,
+    'M',
+    false,
+    removed_foreground
+);
+status_badge_test!(
+    dark_unstaged_d_badge,
+    Unstaged,
+    'D',
+    false,
+    removed_foreground
+);
+status_badge_test!(
+    dark_unstaged_r_badge,
+    Unstaged,
+    'R',
+    false,
+    removed_foreground
+);
+status_badge_test!(
+    dark_unstaged_c_badge,
+    Unstaged,
+    'C',
+    false,
+    removed_foreground
+);
+status_badge_test!(
+    dark_unstaged_t_badge,
+    Unstaged,
+    'T',
+    false,
+    removed_foreground
+);
+status_badge_test!(
+    dark_unstaged_u_badge,
+    Unstaged,
+    'U',
+    false,
+    removed_foreground
+);
+status_badge_test!(dark_staged_a_badge, Staged, 'A', false, added_foreground);
+status_badge_test!(dark_staged_m_badge, Staged, 'M', false, added_foreground);
+status_badge_test!(dark_staged_d_badge, Staged, 'D', false, added_foreground);
+status_badge_test!(dark_staged_r_badge, Staged, 'R', false, added_foreground);
+status_badge_test!(dark_staged_c_badge, Staged, 'C', false, added_foreground);
+status_badge_test!(dark_staged_t_badge, Staged, 'T', false, added_foreground);
+status_badge_test!(
+    dark_untracked_untracked_badge,
+    Untracked,
+    '?',
+    false,
+    removed_foreground
+);
+status_badge_test!(dark_comparison_a_badge, Comparison, 'A', false, muted);
+status_badge_test!(dark_comparison_m_badge, Comparison, 'M', false, muted);
+status_badge_test!(dark_comparison_d_badge, Comparison, 'D', false, muted);
+status_badge_test!(dark_comparison_r_badge, Comparison, 'R', false, muted);
+status_badge_test!(
+    light_unstaged_a_badge,
+    Unstaged,
+    'A',
+    true,
+    removed_foreground
+);
+status_badge_test!(
+    light_unstaged_m_badge,
+    Unstaged,
+    'M',
+    true,
+    removed_foreground
+);
+status_badge_test!(
+    light_unstaged_d_badge,
+    Unstaged,
+    'D',
+    true,
+    removed_foreground
+);
+status_badge_test!(
+    light_unstaged_r_badge,
+    Unstaged,
+    'R',
+    true,
+    removed_foreground
+);
+status_badge_test!(
+    light_unstaged_c_badge,
+    Unstaged,
+    'C',
+    true,
+    removed_foreground
+);
+status_badge_test!(
+    light_unstaged_t_badge,
+    Unstaged,
+    'T',
+    true,
+    removed_foreground
+);
+status_badge_test!(
+    light_unstaged_u_badge,
+    Unstaged,
+    'U',
+    true,
+    removed_foreground
+);
+status_badge_test!(light_staged_a_badge, Staged, 'A', true, added_foreground);
+status_badge_test!(light_staged_m_badge, Staged, 'M', true, added_foreground);
+status_badge_test!(light_staged_d_badge, Staged, 'D', true, added_foreground);
+status_badge_test!(light_staged_r_badge, Staged, 'R', true, added_foreground);
+status_badge_test!(light_staged_c_badge, Staged, 'C', true, added_foreground);
+status_badge_test!(light_staged_t_badge, Staged, 'T', true, added_foreground);
+status_badge_test!(
+    light_untracked_untracked_badge,
+    Untracked,
+    '?',
+    true,
+    removed_foreground
+);
+status_badge_test!(light_comparison_a_badge, Comparison, 'A', true, muted);
+status_badge_test!(light_comparison_m_badge, Comparison, 'M', true, muted);
+status_badge_test!(light_comparison_d_badge, Comparison, 'D', true, muted);
+status_badge_test!(light_comparison_r_badge, Comparison, 'R', true, muted);
+
+#[test]
+fn mixed_status_badges_keep_unstaged_before_staged() -> crate::AppResult<()> {
+    // Given
+    let state = state_with_statuses(&[
+        ("file.rs", Category::Staged, 'A'),
+        ("file.rs", Category::Unstaged, 'M'),
+        ("file.rs", Category::Unstaged, 'M'),
+    ]);
+    // When
+    let buffer = render(&state, &Config::default(), 34, 6)?;
+    // Then
+    assert_eq!(buffer[(30, 1)].symbol(), "M");
+    assert_eq!(buffer[(30, 1)].fg, Palette::new(false).removed_foreground);
+    assert_eq!(buffer[(31, 1)].symbol(), "A");
+    assert_eq!(buffer[(31, 1)].fg, Palette::new(false).added_foreground);
+    assert_eq!(buffer[(31, 0)].symbol(), "1");
     Ok(())
 }

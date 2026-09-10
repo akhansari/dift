@@ -1,6 +1,7 @@
 use crate::{
     config::{Config, Icons},
     input::{Action, Bindings, Scope},
+    model::Category,
     render::Palette,
     state::{Effects, State, TreeRow},
     text::name_spans,
@@ -319,7 +320,7 @@ impl RowLayout {
         });
         let metadata_width = count.as_ref().map_or(0, |count| count.width())
             + usize::from(count.is_some() && !row.badges.is_empty())
-            + row.badges.width();
+            + row.badges.len();
         let available = width.saturating_sub(metadata_width + usize::from(metadata_width > 0));
         let collapsed = state.is_collapsed(&row.path);
         let prefix = match config.icons {
@@ -365,17 +366,13 @@ fn row_line<'a>(
             metadata.push(Span::raw(" "));
         }
     }
-    metadata.extend(row.badges.chars().map(|badge| {
-        let color = match (badge, config.light) {
-            ('U', true) => Color::Rgb(139, 91, 16),
-            ('U', false) => Color::Rgb(205, 166, 92),
-            ('S', true) => Color::Rgb(39, 115, 69),
-            ('S', false) => Color::Rgb(124, 181, 141),
-            ('?', true) => Color::Rgb(27, 111, 126),
-            ('?', false) => Color::Rgb(112, 180, 194),
-            _ => palette.muted,
+    metadata.extend(row.badges.iter().map(|badge| {
+        let color = match badge.category {
+            Category::Unstaged | Category::Untracked => palette.removed_foreground,
+            Category::Staged => palette.added_foreground,
+            Category::Comparison => palette.muted,
         };
-        Span::styled(badge.to_string(), Style::default().fg(color))
+        Span::styled(badge.status.to_string(), Style::default().fg(color))
     }));
     let mut spans = Vec::new();
     for depth in row.depth - layout.indent_levels..row.depth {

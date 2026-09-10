@@ -56,8 +56,8 @@ fn dark_activity_colors_the_whole_row_and_preserves_badges() -> crate::AppResult
     // Then
     assert_eq!(buffer[(0, 2)].bg, Color::Rgb(65, 49, 27));
     assert_eq!(buffer[(31, 2)].bg, buffer[(0, 2)].bg);
-    assert_eq!(buffer[(31, 2)].symbol(), "U");
-    assert_eq!(buffer[(31, 2)].fg, Color::Rgb(205, 166, 92));
+    assert_eq!(buffer[(31, 2)].symbol(), "M");
+    assert_eq!(buffer[(31, 2)].fg, Palette::new(false).removed_foreground);
     assert_ne!(buffer[(10, 1)].bg, buffer[(10, 2)].bg);
     assert_ne!(buffer[(10, 1)].bg, Color::Reset);
     Ok(())
@@ -79,6 +79,7 @@ fn light_activity_preserves_the_selected_files_blue_focus_marker() -> crate::App
     assert_eq!(buffer[(0, 2)].symbol(), "▎");
     assert_eq!(buffer[(0, 2)].fg, Palette::new(true).accent);
     assert_eq!(buffer[(7, 2)].fg, Palette::new(true).accent);
+    assert_eq!(buffer[(31, 2)].fg, Palette::new(true).removed_foreground);
     Ok(())
 }
 

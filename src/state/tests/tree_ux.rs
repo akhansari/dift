@@ -41,7 +41,19 @@ fn directories_count_each_changed_path_once() -> AppResult<()> {
     assert_eq!(root.count, 3);
     assert_eq!(src.count, 2);
     assert_eq!(file.count, 1);
-    assert_eq!(file.badges, "US");
+    assert_eq!(
+        file.badges,
+        [
+            TreeBadge {
+                category: Category::Unstaged,
+                status: 'M'
+            },
+            TreeBadge {
+                category: Category::Staged,
+                status: 'M'
+            }
+        ]
+    );
     Ok(())
 }
 

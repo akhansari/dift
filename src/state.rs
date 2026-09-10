@@ -8,7 +8,7 @@ pub use collection::CollectionRequest;
 use collection::CollectionState;
 use diff::DiffState;
 use tree::TreeIndex;
-pub use tree::TreeRow;
+pub use tree::{TreeBadge, TreeRow};
 pub use update::{EditorPosition, Effects};
 
 use crate::{
@@ -816,7 +816,13 @@ mod tests {
         state.update_snapshot(replacement);
         // Then
         assert_eq!(state.selected_changes(), [1]);
-        assert_eq!(state.tree(false)[2].badges, "S");
+        assert_eq!(
+            state.tree(false)[2].badges,
+            [TreeBadge {
+                category: Category::Staged,
+                status: 'M'
+            }]
+        );
         assert_eq!(state.tree(false)[2].path, Path::new("src/a.rs"));
     }
 

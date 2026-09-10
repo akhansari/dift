@@ -53,6 +53,13 @@ impl FuzzyPathMatcher {
     }
 }
 
+/// A Git status paired with the category that determines its tree color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TreeBadge {
+    pub category: Category,
+    pub status: char,
+}
+
 /// A file or directory displayed in the sidebar tree.
 #[derive(Debug, Clone)]
 pub struct TreeRow {
@@ -62,8 +69,8 @@ pub struct TreeRow {
     pub directory: bool,
     /// Nesting depth used for indentation.
     pub depth: usize,
-    /// Compact change category markers shown beside the path.
-    pub badges: String,
+    /// Git status markers shown beside the path, ordered by category.
+    pub badges: Vec<TreeBadge>,
     /// Escaped basename, or the label for the repository root.
     pub name: String,
     /// Distinct matching paths in this subtree, including this path if changed.
@@ -81,7 +88,7 @@ struct Node {
     parent: Option<usize>,
     children: Vec<usize>,
     changes: Vec<usize>,
-    badges: String,
+    badges: Vec<TreeBadge>,
 }
 impl Node {
     fn new(path: &Path, parent: Option<usize>) -> Self {
@@ -102,7 +109,7 @@ impl Node {
             parent,
             children: Vec::new(),
             changes: Vec::new(),
-            badges: String::new(),
+            badges: Vec::new(),
         }
     }
 }
@@ -133,15 +140,15 @@ impl TreeIndex {
             node.badges = node
                 .changes
                 .iter()
-                .map(|index| snapshot.changes[*index].category)
+                .map(|index| {
+                    let change = &snapshot.changes[*index];
+                    TreeBadge {
+                        category: change.category,
+                        status: change.status,
+                    }
+                })
                 .collect::<BTreeSet<_>>()
                 .into_iter()
-                .map(|category| match category {
-                    Category::Unstaged => 'U',
-                    Category::Untracked => '?',
-                    Category::Staged => 'S',
-                    Category::Comparison => 'M',
-                })
                 .collect();
         }
         tree.refilter(filter, collapsed);
