@@ -19,3 +19,22 @@ unicode-width = "0.2.2"
 similar = { version = "3.2.0", features = ["inline", "unicode"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-themes", "regex-fancy"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+
+[[test]]
+name = "smoke"
+test = false
+bench = false
+
+[[test]]
+name = "perf"
+test = false
+bench = false
+harness = false
+
+[target.'cfg(unix)'.dev-dependencies]
+alacritty_terminal = { version = "0.26.0", default-features = false }
+memmap2 = "0.9"
+rustix = { version = "1", features = ["event", "process", "termios"] }
+rustix-openpty = "0.2"
+serde_json = "1"
+tempfile = "3.27"

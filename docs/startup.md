@@ -19,11 +19,10 @@ publication is always delivered unless the request has been superseded.
 
 ## Measuring the actual terminal
 
-Build the release executable, then run the Unix benchmark with Python 3.11 or newer:
+Run the opt-in Rust terminal benchmark on Unix (Cargo builds the release executable):
 
 ```sh
-cargo build --release --locked
-python3 tests/startup_bench.py --repo /path/to/repository --runs 5
+cargo test --release --locked --test perf -- --repo /path/to/repository --runs 5
 ```
 
 Use `--binary /path/to/dift` to compare another build. The benchmark opens the

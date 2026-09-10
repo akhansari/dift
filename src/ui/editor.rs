@@ -222,6 +222,10 @@ mod tests {
     use super::*;
     use crate::{AppResult, ui::fixtures::Fixture};
 
+    #[cfg(unix)]
+    #[path = "command_tests.rs"]
+    mod command_tests;
+
     #[test]
     fn no_active_file_returns_a_selection_hint() {
         // Given

@@ -1,0 +1,38 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            toolchain: stable
+          - os: macos-latest
+            toolchain: stable
+          - os: windows-latest
+            toolchain: stable
+          - os: ubuntu-latest
+            toolchain: 1.98.0
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component rustfmt --component clippy
+      - run: cargo +${{ matrix.toolchain }} fmt -- --check
+        if: matrix.toolchain == 'stable'
+      - run: cargo +${{ matrix.toolchain }} clippy --locked --all-targets -- -D warnings
+        if: matrix.toolchain == 'stable'
+      - run: cargo +${{ matrix.toolchain }} check --locked
+      - run: cargo +${{ matrix.toolchain }} test --locked
+      - run: cargo +${{ matrix.toolchain }} test --locked --test smoke -- --test-threads=4
+        if: runner.os != 'Windows'
