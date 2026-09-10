@@ -40,6 +40,8 @@ Dift is compatible with Git 2.47 and newer.
 
 ## Usage
 
+Run without a subcommand to watch worktree changes live.
+
 ```sh
 dift [--config <CONFIG>] [--default-config] [SUBCOMMAND]
 

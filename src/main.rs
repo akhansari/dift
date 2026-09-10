@@ -7,6 +7,7 @@ use dift::{
 use std::{ffi::OsStr, path::PathBuf, process::ExitCode};
 use usage_rs as usage;
 
+/// Run without a subcommand to watch worktree changes live.
 #[derive(usage::Cli)]
 #[usage(bin = "dift", version)]
 struct Cli {
