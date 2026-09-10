@@ -75,6 +75,7 @@ pub enum Action {
     Help,
     Refresh,
     ToggleStage,
+    Discard,
     OpenEditor,
     OpenEditorPlain,
     CursorLeft,
@@ -88,7 +89,7 @@ pub enum Action {
     ClearAfter,
 }
 impl Action {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::Quit,
         Self::Sidebar,
         Self::Layout,
@@ -118,6 +119,7 @@ impl Action {
         Self::Help,
         Self::Refresh,
         Self::ToggleStage,
+        Self::Discard,
         Self::OpenEditor,
         Self::OpenEditorPlain,
         Self::CursorLeft,
@@ -161,6 +163,7 @@ impl Action {
             Self::Help => "help",
             Self::Refresh => "refresh",
             Self::ToggleStage => "toggle-stage",
+            Self::Discard => "discard",
             Self::OpenEditor => "open-editor",
             Self::OpenEditorPlain => "open-editor-plain",
             Self::CursorLeft => "cursor-left",
@@ -346,6 +349,7 @@ impl Bindings {
             (Action::Help, "?"),
             (Action::Refresh, "r"),
             (Action::ToggleStage, "space"),
+            (Action::Discard, "D"),
             (Action::OpenEditor, "o"),
             (Action::OpenEditorPlain, "O"),
         ];

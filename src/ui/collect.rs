@@ -3,9 +3,12 @@ use mutations::Mutations;
 
 use super::watch::{Batch, EventFilter, Refresh, Watches};
 use crate::{
-    git::{Collector, GitError, Limits, Mode, Repository, StageOutcome, StageTarget},
+    git::{
+        Collector, DiscardOutcome, DiscardPreview, GitError, Limits, Mode, Repository,
+        StageOutcome, StageTarget,
+    },
     model::{ActivityObservations, Snapshot},
-    state::CollectionRequest,
+    state::{CollectionRequest, DISCARD_MODES, DiscardOption},
 };
 use std::{
     collections::BTreeSet,
@@ -18,6 +21,8 @@ use std::{
 
 pub(super) enum Update {
     MutationFinished(Result<StageOutcome, GitError>),
+    DiscardPrepared([DiscardOption; 2]),
+    DiscardFinished(Result<DiscardOutcome, GitError>),
     ObservedActivity(ActivityObservations),
     InternalActivity(BTreeSet<PathBuf>, ActivityObservations, BTreeSet<PathBuf>),
     Started(u64),
@@ -27,6 +32,13 @@ pub(super) enum Update {
 enum Request {
     Collect(CollectionRequest),
     Toggle(StageTarget, CollectionRequest),
+    PrepareDiscard(StageTarget),
+    Discard(Arc<DiscardPreview>, CollectionRequest),
+}
+
+enum Mutation {
+    Toggle(StageTarget),
+    Discard(Arc<DiscardPreview>),
 }
 
 pub(super) struct Worker {
@@ -77,7 +89,24 @@ impl Worker {
                         Request::Collect(request) => latest = request,
                         Request::Toggle(target, request) => {
                             latest = request;
-                            mutations.push(target);
+                            mutations.push(Mutation::Toggle(target));
+                        }
+                        Request::PrepareDiscard(target) => {
+                            let options = DISCARD_MODES.map(|mode| {
+                                if watching {
+                                    paths
+                                        .prepare_discard(&target, mode)
+                                        .map(Arc::new)
+                                        .map_err(|error| error.to_string())
+                                } else {
+                                    Err("Discard is unavailable in comparison mode".into())
+                                }
+                            });
+                            let _ = send.send(Update::DiscardPrepared(options));
+                        }
+                        Request::Discard(preview, request) => {
+                            latest = request;
+                            mutations.push(Mutation::Discard(preview));
                         }
                     };
                     let mut force = match receive.recv_timeout(timeout) {
@@ -95,7 +124,7 @@ impl Worker {
                     }
                     let outcomes: Vec<_> = mutations
                         .into_iter()
-                        .map(|target| {
+                        .map(|mutation| {
                             if watching {
                                 // Observe external edits before the command can change their
                                 // category or incorporate them into the index.
@@ -132,20 +161,39 @@ impl Worker {
                                     // overlapping operations is ambiguous.
                                     internal_mutations.invalidate();
                                 }
-                                let report = paths.toggle_stage_tracked(&target);
+                                let (attribution, update) = match mutation {
+                                    Mutation::Toggle(target) => {
+                                        let report = paths.toggle_stage_tracked(&target);
+                                        (
+                                            report.attribution,
+                                            Update::MutationFinished(report.outcome),
+                                        )
+                                    }
+                                    Mutation::Discard(preview) => {
+                                        let report = paths.discard_tracked(&preview);
+                                        (
+                                            report.attribution,
+                                            Update::DiscardFinished(report.outcome),
+                                        )
+                                    }
+                                };
                                 internal_mutations.record(
-                                    report.attribution,
+                                    attribution,
                                     before
                                         .as_ref()
                                         .ok()
                                         .and_then(|snapshot| snapshot.activity.as_ref()),
                                     head.as_deref(),
                                 );
-                                report.outcome
+                                update
                             } else {
-                                Err(GitError::Command(
-                                    "Staging is unavailable in comparison mode".into(),
-                                ))
+                                let error = GitError::Command(
+                                    "Git changes are unavailable in comparison mode".into(),
+                                );
+                                match mutation {
+                                    Mutation::Toggle(_) => Update::MutationFinished(Err(error)),
+                                    Mutation::Discard(_) => Update::DiscardFinished(Err(error)),
+                                }
                             }
                         })
                         .collect();
@@ -218,7 +266,7 @@ impl Worker {
                         break;
                     }
                     for outcome in outcomes {
-                        let _ = send.send(Update::MutationFinished(outcome));
+                        let _ = send.send(outcome);
                     }
                     if reconcile_watches
                         && let (Some(filter), Some(collector)) = (&mut filter, &collector)
@@ -247,6 +295,22 @@ impl Worker {
     pub(super) fn toggle(&self, target: StageTarget, request: CollectionRequest) -> io::Result<()> {
         self.requests
             .send(Request::Toggle(target, request))
+            .map_err(|_| io::Error::other("Git worker stopped"))
+    }
+
+    pub(super) fn prepare_discard(&self, target: StageTarget) -> io::Result<()> {
+        self.requests
+            .send(Request::PrepareDiscard(target))
+            .map_err(|_| io::Error::other("Git worker stopped"))
+    }
+
+    pub(super) fn discard(
+        &self,
+        preview: Arc<DiscardPreview>,
+        request: CollectionRequest,
+    ) -> io::Result<()> {
+        self.requests
+            .send(Request::Discard(preview, request))
             .map_err(|_| io::Error::other("Git worker stopped"))
     }
 
@@ -527,7 +591,10 @@ mod mutation_tests {
                     assert!(observations.contains_key(std::path::Path::new("tracked.txt")));
                     quiet = true;
                 }
-                Update::Started(_) | Update::ObservedActivity(_) => {}
+                Update::Started(_)
+                | Update::ObservedActivity(_)
+                | Update::DiscardPrepared(_)
+                | Update::DiscardFinished(_) => {}
             }
         }
         Ok(())

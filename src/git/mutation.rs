@@ -5,8 +5,8 @@ use std::{
 };
 
 /// Result and attribution travel together, including on command failure.
-pub(crate) struct MutationResult {
-    pub outcome: Result<StageOutcome, GitError>,
+pub(crate) struct MutationResult<T = StageOutcome> {
+    pub outcome: Result<T, GitError>,
     pub attribution: MutationAttribution,
 }
 
@@ -26,6 +26,8 @@ pub(crate) struct IndexMutation {
     paths: BTreeSet<PathBuf>,
     observed: BTreeSet<PathBuf>,
     working_sources: BTreeMap<PathBuf, std::sync::Arc<str>>,
+    restores_worktree: bool,
+    restored_content: Option<BTreeMap<PathBuf, super::discard::Fingerprint>>,
 }
 
 pub(super) struct IndexObservation {
@@ -64,7 +66,23 @@ impl IndexMutation {
             paths,
             observed: BTreeSet::new(),
             working_sources: BTreeMap::new(),
+            restores_worktree: false,
+            restored_content: None,
         }
+    }
+
+    pub(super) fn restoring(mut self, repo: &Repository) -> Self {
+        self.restores_worktree = true;
+        self.restored_content = self
+            .paths
+            .iter()
+            .map(|path| {
+                super::discard::Fingerprint::capture(&repo.root.join(path))
+                    .map(|fingerprint| (path.clone(), fingerprint))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .ok();
+        self
     }
 
     /// Only paths whose pre-operation working state was actually observed may
@@ -117,7 +135,11 @@ impl IndexMutation {
     pub(crate) fn changed_paths(&self) -> BTreeSet<PathBuf> {
         self.paths
             .iter()
-            .filter(|path| self.before.entries.get(*path) != self.after.entries.get(*path))
+            .filter(|path| {
+                self.before.entries.get(*path) != self.after.entries.get(*path)
+                    || self.restores_worktree
+                        && self.before.worktree.get(*path) != self.after.worktree.get(*path)
+            })
             .cloned()
             .collect()
     }
@@ -152,9 +174,20 @@ impl IndexMutation {
                 );
                 self.observed.contains(*path)
                     && reliable
-                    && before == after
+                    && (!self.restores_worktree
+                        || self
+                            .restored_content
+                            .as_ref()
+                            .and_then(|content| content.get(*path))
+                            .is_some_and(|expected| {
+                                Some(&expected.metadata) == after
+                                    && super::discard::Fingerprint::capture(&repo.root.join(path))
+                                        .is_ok_and(|current| &current == expected)
+                            }))
+                    && (self.restores_worktree || before == after)
                     && current.worktree.get(*path) == self.after.worktree.get(*path)
-                    && self.before.entries.get(*path) != self.after.entries.get(*path)
+                    && (self.before.entries.get(*path) != self.after.entries.get(*path)
+                        || self.restores_worktree && before != after)
                     && current.entries.get(*path) == self.after.entries.get(*path)
             })
             .cloned()
@@ -174,7 +207,7 @@ impl IndexMutation {
                         (Some(before), Some(current)) => before == current,
                         _ => true,
                     };
-                source_matches
+                (self.restores_worktree || source_matches)
                     && observed_index(path, observations).is_some_and(|index| {
                         self.after
                             .entries
@@ -261,7 +294,7 @@ impl Repository {
         self.run(["rev-parse", "--revs-only", "HEAD"])
     }
 
-    fn index_entries(&self) -> Result<BTreeMap<PathBuf, Vec<Vec<u8>>>, GitError> {
+    pub(super) fn index_entries(&self) -> Result<BTreeMap<PathBuf, Vec<Vec<u8>>>, GitError> {
         let output = self.run(["ls-files", "--stage", "-z"])?;
         let mut entries = BTreeMap::<PathBuf, Vec<Vec<u8>>>::new();
         for record in output

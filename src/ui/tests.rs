@@ -24,3 +24,5 @@ fn an_idle_worker_keeps_the_viewer_running() -> io::Result<()> {
     assert_eq!(update, None);
     Ok(())
 }
+
+mod discard;

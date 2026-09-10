@@ -5,6 +5,7 @@ use crate::{
     render::{Renderer, worker::RenderResult},
 };
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+mod discard;
 mod editor;
 mod headers;
 mod mouse;

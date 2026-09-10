@@ -9,12 +9,13 @@ use std::{
 
 /// A repository-relative whole file or recursive directory (empty for the root).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StageTarget {
+pub enum ChangeTarget {
     File(PathBuf),
     Subtree(PathBuf),
 }
-impl StageTarget {
-    fn contains(&self, path: &Path) -> bool {
+pub type StageTarget = ChangeTarget;
+impl ChangeTarget {
+    pub(crate) fn contains(&self, path: &Path) -> bool {
         match self {
             Self::File(file) => path == file,
             Self::Subtree(directory) => path.starts_with(directory),
@@ -142,11 +143,22 @@ impl Repository {
     }
 
     fn execute_stage(&self, operation: &StageOperation) -> Result<(), GitError> {
+        self.run_paths(&operation.args, &operation.paths)
+    }
+
+    pub(super) fn run_paths(
+        &self,
+        args: &[&str],
+        paths: &BTreeSet<PathBuf>,
+    ) -> Result<(), GitError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
         let mut child = Command::new("git")
             .env("LC_ALL", "C")
             .args(["--literal-pathspecs", "--no-pager", "-C"])
             .arg(&self.root)
-            .args(operation.args)
+            .args(args)
             .args(["--pathspec-from-file=-", "--pathspec-file-nul"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -157,7 +169,7 @@ impl Repository {
                 .stdin
                 .take()
                 .ok_or_else(|| std::io::Error::other("Missing Git stdin"))?;
-            for path in &operation.paths {
+            for path in paths {
                 input.write_all(path.as_os_str().as_encoded_bytes())?;
                 input.write_all(&[0])?;
             }

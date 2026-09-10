@@ -1,12 +1,14 @@
 mod activity;
 mod collection;
 mod diff;
+mod discard;
 mod tree;
 mod update;
 
 pub use collection::CollectionRequest;
 use collection::CollectionState;
 use diff::DiffState;
+pub(crate) use discard::{DISCARD_MODES, DiscardOption};
 use tree::TreeIndex;
 pub use tree::{TreeBadge, TreeRow};
 pub use update::{EditorPosition, Effects};
@@ -98,6 +100,7 @@ pub struct State {
     sidebar: bool,
     /// Whether the help overlay is visible.
     help: bool,
+    discard: Option<discard::DiscardMenu>,
     /// Latest setting notification, removed when its deadline passes.
     toast: Option<Toast>,
     visible_files: usize,
@@ -140,6 +143,10 @@ impl State {
         }
     }
     pub fn stage_target(&self, height: usize) -> Option<crate::git::StageTarget> {
+        self.change_target(height)
+    }
+
+    pub fn change_target(&self, height: usize) -> Option<crate::git::ChangeTarget> {
         use crate::git::StageTarget;
         if self.focus == Scope::Tree {
             self.tree
@@ -238,6 +245,7 @@ impl State {
             focus: Scope::Tree,
             sidebar: true,
             help: false,
+            discard: None,
             toast: None,
             visible_files: 0,
         }

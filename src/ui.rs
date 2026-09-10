@@ -1,6 +1,7 @@
 mod activity;
 mod clipboard;
 mod collect;
+mod discard;
 mod editor;
 #[cfg(test)]
 mod fixtures;
@@ -56,6 +57,10 @@ impl Interaction {
         height: usize,
         now: Instant,
     ) -> Effects {
+        if state.discard_menu().is_some() {
+            self.selection.clear();
+            return state.handle_key(key, bindings, height, now);
+        }
         if state.prompt().is_none()
             && !state.help()
             && bindings.action(state.focus(), key) == Some(Action::Cancel)
@@ -96,7 +101,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let mut state = State::with_whitespace(config.split, config.whitespace);
-    let mut staging = false;
+    let mut mutation_busy = false;
     let mut interaction = Interaction::default();
     let mut render_needed = true;
     let mut needs_draw = true;
@@ -112,7 +117,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
             needs_draw = true;
             match update {
                 collect::Update::MutationFinished(result) => {
-                    staging = false;
+                    mutation_busy = false;
                     state.show_toast(
                         match result {
                             Ok(outcome) => outcome.message().into(),
@@ -120,6 +125,31 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                         },
                         Instant::now(),
                     );
+                }
+                collect::Update::DiscardPrepared(options) => {
+                    mutation_busy = false;
+                    state.discard_prepared(options);
+                }
+                collect::Update::DiscardFinished(result) => {
+                    mutation_busy = false;
+                    if matches!(result, Ok(crate::git::DiscardOutcome::Stale)) {
+                        if let Some(target) = state.discard_stale() {
+                            collecting.prepare_discard(target)?;
+                            mutation_busy = true;
+                        }
+                    } else {
+                        state.close_discard();
+                        state.show_toast(
+                            match result {
+                                Ok(crate::git::DiscardOutcome::Discarded) => {
+                                    "Discarded changes".into()
+                                }
+                                Ok(_) => "Nothing to discard".into(),
+                                Err(error) => error.to_string(),
+                            },
+                            Instant::now(),
+                        );
+                    }
                 }
                 collect::Update::ObservedActivity(observations) => {
                     state.observe_activity(observations, Instant::now());
@@ -219,7 +249,32 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         }
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
-        if effects.toggle_stage && !staging {
+        if effects.open_discard && !mutation_busy {
+            if !watching {
+                state.show_toast(
+                    "Discard is unavailable in comparison mode".into(),
+                    Instant::now(),
+                );
+            } else if let Some(target) = state.change_target(viewport.1) {
+                collecting.prepare_discard(target.clone())?;
+                state.begin_discard(target);
+                interaction.selection.clear();
+                mutation_busy = true;
+            } else {
+                state.show_toast("Nothing to discard".into(), Instant::now());
+            }
+            needs_draw = true;
+        }
+        if effects.confirm_discard
+            && !mutation_busy
+            && size.width >= 40
+            && size.height >= 12
+            && let Some(preview) = state.take_discard_preview()
+        {
+            collecting.discard(preview, state.collection_request())?;
+            mutation_busy = true;
+        }
+        if effects.toggle_stage && !mutation_busy {
             if !watching {
                 state.show_toast(
                     "Staging is unavailable in comparison mode".into(),
@@ -227,7 +282,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
                 );
             } else if let Some(target) = state.stage_target(viewport.1) {
                 collecting.toggle(target, state.collection_request())?;
-                staging = true;
+                mutation_busy = true;
             } else {
                 state.show_toast("Nothing to stage or unstage".into(), Instant::now());
             }
@@ -313,7 +368,7 @@ impl ViewAreas {
         now: Instant,
     ) -> Effects {
         let mut redraw = interaction.selection.reconcile(state, self);
-        if state.help() || state.prompt().is_some() {
+        if state.help() || state.prompt().is_some() || state.discard_menu().is_some() {
             return Effects {
                 redraw,
                 ..Effects::default()
@@ -701,6 +756,7 @@ fn draw(
             );
         }
     }
+    discard::draw(frame, state, config, &palette);
 }
 
 fn draw_toast(frame: &mut Frame, message: &str, body: Rect, palette: &Palette) {

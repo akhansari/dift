@@ -27,6 +27,8 @@ pub struct Effects {
     pub render: bool,
     pub collect: bool,
     pub toggle_stage: bool,
+    pub open_discard: bool,
+    pub confirm_discard: bool,
     pub quit: bool,
     pub open_editor: Option<EditorPosition>,
 }
@@ -202,6 +204,18 @@ impl State {
         height: usize,
         now: Instant,
     ) -> Effects {
+        if self.discard.is_some() {
+            if key.kind != ratatui::crossterm::event::KeyEventKind::Press {
+                return Effects::default();
+            }
+            let input = bindings.action(Scope::Input, key);
+            let action = input
+                .filter(|action| matches!(action, Action::Accept | Action::Cancel))
+                .or_else(|| bindings.action(self.focus, key));
+            return action
+                .map(|action| self.discard_action(action))
+                .unwrap_or_default();
+        }
         let scope = if self.prompt.is_some() {
             Scope::Input
         } else {
@@ -223,6 +237,9 @@ impl State {
     }
 
     pub fn paste(&mut self, text: &str, now: Instant) -> Effects {
+        if self.discard.is_some() {
+            return Effects::default();
+        }
         let Some(prompt) = &mut self.prompt else {
             return Effects::default();
         };
@@ -231,6 +248,9 @@ impl State {
     }
 
     pub fn action(&mut self, action: Action, height: usize, now: Instant) -> Effects {
+        if self.discard.is_some() {
+            return self.discard_action(action);
+        }
         if action == Action::Quit {
             return Effects {
                 quit: true,
@@ -354,6 +374,7 @@ impl State {
                 }
             }
             Action::ToggleStage => effects.toggle_stage = true,
+            Action::Discard => effects.open_discard = true,
             Action::Refresh => effects.collect = true,
             Action::OpenEditor => effects.open_editor = Some(EditorPosition::VisibleHunk),
             Action::OpenEditorPlain => effects.open_editor = Some(EditorPosition::Default),

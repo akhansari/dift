@@ -45,6 +45,21 @@ impl Scenario {
         Ok(report.outcome?)
     }
 
+    fn discard(&mut self) -> AppResult<()> {
+        let head = self.repo.activity_head()?;
+        let before = snapshot(&self.repo)?;
+        let preview = self
+            .repo
+            .prepare_discard(&file(), crate::git::DiscardMode::Unstaged)?;
+        self.state
+            .observe_activity(before.activity.clone().ok_or("Missing activity")?, self.now);
+        let report = self.repo.discard_tracked(&preview);
+        self.pending
+            .record(report.attribution, before.activity.as_ref(), Some(&head));
+        report.outcome?;
+        Ok(())
+    }
+
     fn refresh(&mut self) -> AppResult<BTreeSet<PathBuf>> {
         let guard = self.pending.before_refresh(&self.repo);
         let after = Ok(snapshot(&self.repo)?);
@@ -627,5 +642,36 @@ fn successful_retry_cannot_absorb_a_new_external_index_transition() -> AppResult
     scenario.refresh()?;
     // Then
     assert_eq!(scenario.intensity("tracked.txt"), 1.0);
+    Ok(())
+}
+
+#[test]
+fn internal_unstaged_discard_keeps_retained_staged_file_quiet() -> AppResult<()> {
+    // Given
+    let fixture = staged()?;
+    fixture.write("tracked.txt", "unstaged edit\n")?;
+    let mut scenario = Scenario::new(fixture)?;
+    // When
+    scenario.discard()?;
+    let quiet = scenario.refresh()?;
+    // Then
+    assert_eq!(quiet, BTreeSet::from(["tracked.txt".into()]));
+    assert_eq!(scenario.intensity("tracked.txt"), 0.0);
+    Ok(())
+}
+
+#[test]
+fn external_edit_after_discard_still_highlights() -> AppResult<()> {
+    // Given
+    let fixture = staged()?;
+    fixture.write("tracked.txt", "unstaged edit\n")?;
+    let mut scenario = Scenario::new(fixture)?;
+    scenario.discard()?;
+    // When
+    scenario.fixture.write("tracked.txt", "external edit\n")?;
+    let quiet = scenario.refresh()?;
+    // Then
+    assert!(quiet.is_empty());
+    assert!(scenario.intensity("tracked.txt") > 0.0);
     Ok(())
 }

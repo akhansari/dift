@@ -668,3 +668,32 @@ fn stage_binding_is_generated_and_can_be_reassigned() -> Result<(), ConfigError>
     );
     Ok(())
 }
+
+#[test]
+fn discard_binding_is_generated_and_can_be_reassigned() -> Result<(), ConfigError> {
+    // Given
+    let template = Config::template();
+    // When
+    let config = Config::parse(&template.replace("discard \"shift-d\"", "discard \"x\""))?;
+    // Then
+    assert!(template.contains("discard \"shift-d\""));
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Tree, KeyEvent::from(KeyCode::Char('x'))),
+        Some(Action::Discard)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Diff, KeyEvent::from(KeyCode::Char('D'))),
+        None
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Input, KeyEvent::from(KeyCode::Char('x'))),
+        None
+    );
+    Ok(())
+}

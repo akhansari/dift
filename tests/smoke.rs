@@ -2,6 +2,8 @@
 
 mod terminal;
 
+#[path = "smoke/discard.rs"]
+mod discard;
 #[path = "smoke/editor.rs"]
 mod editor;
 #[path = "smoke/fixtures.rs"]
