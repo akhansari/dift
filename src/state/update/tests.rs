@@ -505,7 +505,7 @@ fn manual_refresh_requests_collection_without_replacing_the_document() {
 }
 
 #[test]
-fn a_failed_collection_retains_the_document_and_allows_retry() {
+fn a_failed_collection_retains_the_document() {
     // Given
     let (mut state, _) = reading_state();
     state.collection_started(0);
@@ -520,6 +520,37 @@ fn a_failed_collection_retains_the_document_and_allows_retry() {
     assert_eq!(state.error(), Some("Cannot read repository"));
     assert!(!state.collecting());
     assert_eq!(state.document().rows.len(), 3);
+}
+
+#[test]
+fn a_successful_retry_after_a_failed_collection_publishes_the_snapshot() {
+    // Given
+    let (mut state, _) = reading_state();
+    let failed = state.collection_request();
+    state.collection_finished(
+        failed.generation,
+        Err(GitError::Command("Cannot read repository".into())),
+        Instant::now(),
+    );
+    assert_eq!(state.error(), Some("Cannot read repository"));
+    let effects = state.action(Action::Refresh, 10, Instant::now());
+    assert!(effects.collect);
+    let retry = state.collection_request();
+    assert!(state.collecting());
+    // When
+    let effects = state.collection_finished(
+        retry.generation,
+        Ok(Snapshot {
+            branch: "recovered".into(),
+            ..Snapshot::default()
+        }),
+        Instant::now(),
+    );
+    // Then
+    assert_eq!(state.snapshot().branch, "recovered");
+    assert_eq!(state.error(), None);
+    assert!(!state.collecting());
+    assert_eq!(effects, Effects::draw(true));
 }
 
 #[test]

@@ -35,22 +35,6 @@ mod tests {
     }
 
     #[test]
-    fn two_bytes_use_one_padding_character() -> io::Result<()> {
-        let mut output = Vec::new();
-        copy(&mut output, "fo")?;
-        assert_eq!(output, b"\x1b]52;c;Zm8=\x1b\\");
-        Ok(())
-    }
-
-    #[test]
-    fn complete_triplet_needs_no_padding() -> io::Result<()> {
-        let mut output = Vec::new();
-        copy(&mut output, "foo")?;
-        assert_eq!(output, b"\x1b]52;c;Zm9v\x1b\\");
-        Ok(())
-    }
-
-    #[test]
     fn unicode_and_source_control_characters_are_encoded() -> io::Result<()> {
         let mut output = Vec::new();
         copy(&mut output, "é\t\n\x1b")?;

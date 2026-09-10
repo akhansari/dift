@@ -246,7 +246,8 @@ fn find_live_selects_the_highest_scoring_file() {
         ("alpha-target.rs", Category::Unstaged),
         ("target.rs", Category::Unstaged),
     ]));
-    state.action(Action::Last, 10, Instant::now());
+    state.action(Action::NextFile, 10, Instant::now());
+    assert_eq!(state.selection(), Path::new("alpha-target.rs"));
     // When
     find(&mut state, "target.rs");
     // Then

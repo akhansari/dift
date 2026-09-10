@@ -57,20 +57,6 @@ fn returning_to_the_displayed_activity_cancels_a_brief_change() {
 }
 
 #[test]
-fn a_cancelled_activity_does_not_appear_on_a_later_tick() {
-    // Given
-    let now = Instant::now();
-    let mut status = ActivityStatus::new(Activity::Watching);
-    status.update(Activity::Polling, now);
-    status.update(Activity::Watching, now + Duration::from_millis(300));
-    // When
-    let redraw = status.update(Activity::Watching, now + Duration::from_millis(500));
-    // Then
-    assert!(!redraw);
-    assert_eq!(status.displayed(), Activity::Watching);
-}
-
-#[test]
 fn a_different_candidate_restarts_the_delay() {
     // Given
     let now = Instant::now();

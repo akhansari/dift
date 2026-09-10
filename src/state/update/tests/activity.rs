@@ -228,12 +228,24 @@ fn clicking_the_selected_file_acknowledges_without_resetting_its_diff() {
         &[("src/a.rs", "third"), ("src/b.rs", "after")],
         now + Duration::from_secs(2),
     );
+    let request = state.render_request(80, 1);
+    state.apply_render(
+        RenderResult {
+            generation: request.generation,
+            document: document(&["one", "two", "three"], false),
+            finished: true,
+        },
+        1,
+    );
+    state.scroll_by(1, true, 1);
+    assert_eq!(state.scroll(), 1);
     // When
     let effects = state.select_tree_row(2, now + Duration::from_secs(3));
     state.advance_activity(now + Duration::from_millis(3200));
     // Then
     assert_eq!(intensity(&state), 0.0);
     assert!(!effects.render);
+    assert_eq!(state.scroll(), 1);
 }
 
 #[test]

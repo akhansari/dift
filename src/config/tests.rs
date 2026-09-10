@@ -352,6 +352,27 @@ fn bindings_add_and_remove_without_replacing_other_defaults() -> Result<(), Conf
         ),
         None
     );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Tree,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)
+        ),
+        Some(Action::NextFile)
+    );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Tree,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)
+        ),
+        Some(Action::Right)
+    );
+    assert_eq!(
+        config.bindings.action(
+            Scope::Input,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ),
+        Some(Action::Accept)
+    );
     Ok(())
 }
 #[test]

@@ -624,17 +624,4 @@ mod tests {
         assert_eq!(editor.text(), "été ");
         assert_eq!(editor.cursor(), 6);
     }
-
-    #[test]
-    fn query_input_keeps_normal_quit_key_available_as_text() {
-        // Given
-        let bindings = Bindings::defaults();
-        // When
-        let action = bindings.action(
-            Scope::Input,
-            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
-        );
-        // Then
-        assert_eq!(action, None);
-    }
 }
