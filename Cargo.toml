@@ -3,12 +3,25 @@ name = "dift"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
-description = "A keyboard-centric, live Git diff viewer"
+description = "Git diffs, live."
+license = "AGPL-3.0-or-later"
+repository = "https://gitlab.com/akhansari/dift"
+readme = "README.md"
+categories = ["command-line-utilities"]
+keywords = ["git", "diff", "tui"]
+authors = ["Amin Khansari"]
+exclude = ["/dist/**"]
 
 [dependencies]
 base64 = "0.23.1"
 thiserror = "2.0.20"
-gix = { version = "0.87.1", default-features = false, features = ["status", "revision", "revparse-regex", "sha1", "sha256"] }
+gix = { version = "0.87.1", default-features = false, features = [
+    "status",
+    "revision",
+    "revparse-regex",
+    "sha1",
+    "sha256",
+] }
 ignore = "0.4.33"
 kdl = "6.7.1"
 ratatui = "0.30.2"
@@ -17,8 +30,13 @@ notify = "8.2.0"
 nucleo-matcher = "0.3.1"
 unicode-width = "0.2.2"
 similar = { version = "3.2.0", features = ["inline", "unicode"] }
-syntect = { version = "5.3.0", default-features = false, features = ["default-themes", "regex-fancy"] }
-two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+syntect = { version = "5.3.0", default-features = false, features = [
+    "default-themes",
+    "regex-fancy",
+] }
+two-face = { version = "0.5.2", default-features = false, features = [
+    "syntect-fancy",
+] }
 
 [[test]]
 name = "smoke"

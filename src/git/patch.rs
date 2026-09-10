@@ -122,45 +122,31 @@ pub(super) fn parse_raw_records(input: &mut &[u8]) -> Result<Vec<RawPatch>, GitE
 }
 
 pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<(Vec<RawPatch>, LineStats), GitError> {
-    let mut records = parse_raw_records(&mut input)?;
-    // Git emits raw records, matching numstat records, then a NUL and patch text.
-    let stats = records
-        .iter()
-        .try_fold(LineStats::default(), |total, record| {
-            let entry = take_nul(&mut input)?;
-            let mut fields = entry.splitn(3, |byte| *byte == b'\t');
-            let invalid = || GitError::InvalidOutput("Invalid Git numstat record".into());
-            let added = fields.next().ok_or_else(invalid)?;
-            let removed = fields.next().ok_or_else(invalid)?;
-            let path = fields.next().ok_or_else(invalid)?;
-            let (path, old_path) = if path.is_empty() {
-                let old = path_from_bytes(take_nul(&mut input)?);
-                (path_from_bytes(take_nul(&mut input)?), Some(old))
-            } else {
-                (path_from_bytes(path), None)
-            };
-            if path != record.path || old_path != record.old_path {
-                return Err(GitError::InvalidOutput(
-                    "Git numstat paths do not match raw records".into(),
-                ));
-            }
-            let counts = if added == b"-" && removed == b"-" {
-                LineStats::default()
-            } else {
-                LineStats {
-                    added: parse_count(added)?,
-                    removed: parse_count(removed)?,
-                }
-            };
-            total
-                .checked_add(counts)
-                .ok_or_else(|| GitError::InvalidOutput("Git line statistics overflow".into()))
-        })?;
-    if !records.is_empty() {
-        input = input
-            .strip_prefix(b"\0")
-            .ok_or_else(|| GitError::InvalidOutput("Missing Git patch separator".into()))?;
+    let raw_records = parse_raw_records(&mut input)?;
+    if raw_records.is_empty() && input.is_empty() {
+        return Ok((Vec::new(), LineStats::default()));
     }
+    let mut remaining = raw_records.into_iter();
+    let mut records = Vec::new();
+    let mut stats = LineStats::default();
+    // Older Git versions can emit raw records that whitespace filtering omits
+    // from both numstat and patch output. Only matched numstat records are visible.
+    while !input.starts_with(b"\0") {
+        let (path, old_path, counts) = parse_numstat(&mut input)?;
+        let record = remaining
+            .by_ref()
+            .find(|record| record.path == path && record.old_path == old_path)
+            .ok_or_else(|| {
+                GitError::InvalidOutput("Git numstat paths do not match raw records".into())
+            })?;
+        records.push(record);
+        stats = stats
+            .checked_add(counts)
+            .ok_or_else(|| GitError::InvalidOutput("Git line statistics overflow".into()))?;
+    }
+    input = input
+        .strip_prefix(b"\0")
+        .ok_or_else(|| GitError::InvalidOutput("Missing Git patch separator".into()))?;
     let text = String::from_utf8_lossy(input);
     let mut patches = Vec::new();
     let mut current = String::new();
@@ -185,6 +171,30 @@ pub(super) fn parse_raw_patch(mut input: &[u8]) -> Result<(Vec<RawPatch>, LineSt
         record.patch = patch;
     }
     Ok((records, stats))
+}
+
+fn parse_numstat(input: &mut &[u8]) -> Result<(PathBuf, Option<PathBuf>, LineStats), GitError> {
+    let entry = take_nul(input)?;
+    let mut fields = entry.splitn(3, |byte| *byte == b'\t');
+    let invalid = || GitError::InvalidOutput("Invalid Git numstat record".into());
+    let added = fields.next().ok_or_else(invalid)?;
+    let removed = fields.next().ok_or_else(invalid)?;
+    let path = fields.next().ok_or_else(invalid)?;
+    let (path, old_path) = if path.is_empty() {
+        let old = path_from_bytes(take_nul(input)?);
+        (path_from_bytes(take_nul(input)?), Some(old))
+    } else {
+        (path_from_bytes(path), None)
+    };
+    let counts = if added == b"-" && removed == b"-" {
+        LineStats::default()
+    } else {
+        LineStats {
+            added: parse_count(added)?,
+            removed: parse_count(removed)?,
+        }
+    };
+    Ok((path, old_path, counts))
 }
 
 fn parse_count(input: &[u8]) -> Result<u64, GitError> {
@@ -316,6 +326,49 @@ mod tests {
         let result = parse_raw_patch(output);
         // Then
         assert!(matches!(result, Err(GitError::InvalidOutput(_))));
+    }
+
+    #[test]
+    fn raw_records_without_numstat_are_filtered() {
+        // Given
+        let output = b":100644 100644 aaaa bbbb M\0hidden\0\0";
+        // When
+        let (records, stats) = parse_raw_patch(output).unwrap();
+        // Then
+        assert!(records.is_empty());
+        assert_eq!(stats, LineStats::default());
+    }
+
+    #[test]
+    fn empty_output_has_no_records() {
+        // Given
+        let output = b"";
+        // When
+        let (records, stats) = parse_raw_patch(output).unwrap();
+        // Then
+        assert!(records.is_empty());
+        assert_eq!(stats, LineStats::default());
+    }
+
+    #[test]
+    fn numstat_records_select_visible_raw_records() {
+        // Given
+        let output = b":100644 100644 aaaa bbbb M\0hidden\0\
+            :100644 100644 cccc dddd M\0visible\0\
+            2\t1\tvisible\0\0diff --git a/visible b/visible\n";
+        // When
+        let (records, stats) = parse_raw_patch(output).unwrap();
+        // Then
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, PathBuf::from("visible"));
+        assert_eq!(records[0].patch, "diff --git a/visible b/visible\n");
+        assert_eq!(
+            stats,
+            LineStats {
+                added: 2,
+                removed: 1
+            }
+        );
     }
 
     #[test]

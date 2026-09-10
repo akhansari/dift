@@ -1,0 +1,18 @@
+[git]
+# Parse commits according to the conventional commits specification.
+conventional_commits = true
+# Exclude commits that do not match the conventional commits specification.
+filter_unconventional = true
+# Exclude commits that are not matched by any commit parser.
+filter_commits = true
+# Include only the tags that belong to the current branch.
+use_branch_tags = false
+# An array of regex based parsers for extracting data from the commit message.
+# Assigns commits to groups.
+# Optionally sets the commit's scope and can decide to exclude commits from further processing.
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->🚀 Features" },
+    { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
+    { message = "^refactor", group = "<!-- 2 -->🚜 Refactor" },
+    { message = "^perf", group = "<!-- 3 -->⚡ Performance" },
+]

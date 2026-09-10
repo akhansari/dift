@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=https://gitlab.com/gitlab-org/gitlab-foss/-/raw/master/app/assets/javascripts/editor/schema/ci.json
+
+stages:
+  - check
+  - build
+  - release
+
+variables:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG =~ /^v.*$/
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+checks:
+  stage: check
+  image: rust:1
+  before_script:
+    - rustup component add rustfmt clippy
+    - cargo fetch --locked
+  script:
+    - cargo fmt --check
+    - cargo check --locked
+    - cargo clippy --locked
+    - cargo test --locked
+
+build-release:
+  stage: build
+  image: ghcr.io/rust-cross/cargo-zigbuild:0.23.4
+  before_script:
+    - rustup toolchain install stable --profile minimal --target "$TARGET"
+    - |
+      if [ "$TARGET" = x86_64-pc-windows-gnu ]; then
+        apt-get update
+        apt-get install -y --no-install-recommends binutils-mingw-w64-x86-64
+      fi
+  script:
+    - test "$CI_COMMIT_TAG" = "v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+    - cargo +stable zigbuild --locked --release --target "$TARGET"
+    - |
+      case "$TARGET" in
+        *-windows-*) binary=dift.exe ;;
+        *) binary=dift ;;
+      esac
+      mkdir -p dist
+      archive="dift-$CI_COMMIT_TAG-$TARGET.tar.gz"
+      tar -C "target/$TARGET/release" -czf "dist/$archive" "$binary"
+      (cd dist && sha256sum "$archive" > "$archive.sha256")
+  artifacts:
+    name: "dift-$CI_COMMIT_TAG-$TARGET"
+    paths:
+      - dist/
+    expire_in: 1 week
+  parallel:
+    matrix:
+      - TARGET:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*$/
+
+publish:
+  stage: release
+  image: rust:1
+  dependencies: []
+  when: manual
+  allow_failure: false
+  script:
+    - cargo publish --locked --no-verify --allow-dirty
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*$/
+
+release:
+  stage: release
+  image: alpine
+  variables:
+    GLAB_ENABLE_CI_AUTOLOGIN: "true"
+    GIT_DEPTH: 0
+  needs:
+    - job: build-release
+      artifacts: true
+  before_script:
+    - apk update
+    - apk add git-cliff glab
+  script:
+    - git-cliff --latest --output=release-notes.md
+    - glab release create "$CI_COMMIT_TAG" dist/* --name "$CI_COMMIT_TAG" --notes-file release-notes.md --ref "$CI_COMMIT_SHA" --use-package-registry
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v.*$/
