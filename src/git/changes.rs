@@ -124,11 +124,9 @@ impl Collector {
                 // Metadata also covers paths hidden by whitespace. Sources remain
                 // optional evidence, so loading/revealing a preview isn't an edit.
                 for (path, categories) in &mut observations {
-                    for (category, observation) in categories {
-                        if matches!(category, Category::Unstaged | Category::Untracked) {
-                            observation.metadata =
-                                source::activity_metadata(&self.paths.root.join(path));
-                        }
+                    let metadata = source::activity_metadata(&self.paths.root.join(path));
+                    for observation in categories.values_mut() {
+                        observation.metadata = metadata.clone();
                     }
                 }
                 for change in &result.changes {

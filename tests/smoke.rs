@@ -308,3 +308,205 @@ fn navigation_cancels_large_file_enrichment() -> Result {
     )?;
     session.quit()
 }
+
+#[test]
+fn space_stages_and_unstages_root_with_automatic_pane_refresh() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start()?;
+    // When
+    session.send(" ")?;
+    // Then
+    session.wait("Staged changes")?;
+    session.wait_for("staged panes", Duration::from_secs(4), |screen| {
+        screen.contains("STAGED")
+            && !screen.contains("UNSTAGED")
+            && !screen.contains("UNTRACKED")
+            && screen.contains("working")
+    })?;
+    assert!(fixture.git(&["diff"])?.is_empty());
+    assert_eq!(fixture.git(&["show", ":notes.txt"])?, "untracked note");
+    session.send(" ")?;
+    session.wait("Unstaged changes")?;
+    session.wait("UNTRACKED")?;
+    session.wait("UNSTAGED")?;
+    assert!(fixture.git(&["diff", "--cached"])?.is_empty());
+    session.quit()
+}
+
+#[test]
+fn comparison_mode_rejects_staging() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start_with(fixture.root(), &["diff", "HEAD", "HEAD"], &[])?;
+    let before = fixture.git(&["diff", "--cached"])?;
+    // When
+    session.send(" ")?;
+    // Then
+    session.wait("Staging is unavailable in comparison mode")?;
+    assert_eq!(fixture.git(&["diff", "--cached"])?, before);
+    session.quit()
+}
+
+#[test]
+fn repeated_space_during_a_locked_operation_does_not_queue_toggles() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start()?;
+    fixture.write(".git/index.lock", "")?;
+    // When
+    session.send("          ")?;
+    // Then
+    session.wait("index.lock")?;
+    fs::remove_file(fixture.path(".git/index.lock"))?;
+    session.send(" ")?;
+    session.wait("Staged changes")?;
+    assert!(fixture.git(&["diff"])?.is_empty());
+    session.quit()
+}
+
+#[test]
+fn filtered_root_stages_hidden_descendants() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start()?;
+    session.send("fnotes\r")?;
+    session.wait("filter: notes")?;
+    // When
+    session.send(" ")?;
+    // Then
+    session.wait("Staged changes")?;
+    assert!(fixture.git(&["diff"])?.is_empty());
+    assert_eq!(
+        fixture.git(&["show", ":src/main.rs"])?,
+        "fn main() { println!(\"working\"); }"
+    );
+    session.quit()
+}
+
+#[test]
+fn diff_focus_stages_only_the_visible_file() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start()?;
+    session.send("fnotes\r\t")?;
+    session.wait("untracked note")?;
+    // When
+    session.send(" ")?;
+    // Then
+    session.wait("Staged changes")?;
+    assert_eq!(fixture.git(&["show", ":notes.txt"])?, "untracked note");
+    assert_eq!(
+        fixture.git(&["show", ":src/main.rs"])?,
+        "fn main() { println!(\"staged\"); }"
+    );
+    session.quit()
+}
+
+#[test]
+fn hidden_whitespace_changes_can_be_staged_from_root() -> Result {
+    // Given
+    let fixture = Fixture::spacing()?;
+    fixture.configure("diff { whitespace \"ignore-all\"; }")?;
+    let mut session = fixture.start()?;
+    // When
+    session.send(" ")?;
+    // Then
+    session.wait("Staged changes")?;
+    assert!(fixture.git(&["diff"])?.is_empty());
+    assert_eq!(fixture.git(&["show", ":spacing.txt"])?, "one  two");
+    session.quit()
+}
+
+#[test]
+fn collapsed_directory_stages_every_descendant() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("src/deep/hidden.txt", "hidden descendant")?;
+    let mut session = fixture.start()?;
+    session.send("j")?;
+    session.select("src")?;
+    session.send("h")?;
+    // When
+    session.send(" ")?;
+    // Then
+    session.wait("Staged changes")?;
+    assert_eq!(
+        fixture.git(&["show", ":src/deep/hidden.txt"])?,
+        "hidden descendant"
+    );
+    assert!(
+        fixture
+            .git(&["status", "--porcelain"])?
+            .contains("?? notes.txt")
+    );
+    session.quit()
+}
+
+fn tree_background(
+    screen: &terminal::Screen,
+    name: &str,
+) -> Option<alacritty_terminal::vte::ansi::Color> {
+    (0..screen.rows())
+        .find(|y| {
+            screen
+                .row(*y)
+                .chars()
+                .take(32)
+                .collect::<String>()
+                .contains(name)
+        })
+        .map(|y| screen.cell(2, y).bg)
+}
+
+#[test]
+fn internal_staging_is_quiet_but_external_edits_highlight() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start()?;
+    let background = tree_background(&session.screen, "main.rs").ok_or("Missing tree file")?;
+    // When
+    session.send(" ")?;
+    session.wait("Staged changes")?;
+    session.observe(Duration::from_millis(500))?;
+    // Then
+    assert_eq!(
+        tree_background(&session.screen, "main.rs"),
+        Some(background)
+    );
+    assert_eq!(
+        tree_background(&session.screen, "notes.txt"),
+        Some(background)
+    );
+    session.send(" ")?;
+    session.wait("Unstaged changes")?;
+    session.observe(Duration::from_millis(500))?;
+    assert_eq!(
+        tree_background(&session.screen, "main.rs"),
+        Some(background)
+    );
+    fixture.write("src/main.rs", "external edit after unstage\n")?;
+    session.wait_for(
+        "external activity highlight",
+        Duration::from_secs(4),
+        |screen| tree_background(screen, "main.rs").is_some_and(|color| color != background),
+    )?;
+    session.quit()
+}
+
+#[test]
+fn external_staging_still_highlights_the_tree() -> Result {
+    // Given
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start()?;
+    let background = tree_background(&session.screen, "main.rs").ok_or("Missing tree file")?;
+    // When
+    fixture.git(&["add", "src/main.rs"])?;
+    // Then
+    session.wait_for(
+        "external staging highlight",
+        Duration::from_secs(4),
+        |screen| tree_background(screen, "main.rs").is_some_and(|color| color != background),
+    )?;
+    session.quit()
+}

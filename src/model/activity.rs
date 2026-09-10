@@ -34,6 +34,7 @@ pub enum WorktreeMetadata {
         bytes: u64,
         modified: Option<SystemTime>,
         readonly: bool,
+        mode: Option<u32>,
         link_target: Option<PathBuf>,
     },
 }

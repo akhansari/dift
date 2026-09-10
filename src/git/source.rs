@@ -15,6 +15,7 @@ pub(super) fn activity_metadata(path: &Path) -> Option<WorktreeMetadata> {
             bytes: metadata.len(),
             modified: metadata.modified().ok(),
             readonly: metadata.permissions().readonly(),
+            mode: permission_mode(&metadata),
             link_target: metadata
                 .is_symlink()
                 .then(|| fs::read_link(path).ok())
@@ -23,6 +24,17 @@ pub(super) fn activity_metadata(path: &Path) -> Option<WorktreeMetadata> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Some(WorktreeMetadata::Missing),
         Err(_) => None,
     }
+}
+
+#[cfg(unix)]
+fn permission_mode(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn permission_mode(_metadata: &fs::Metadata) -> Option<u32> {
+    None
 }
 
 #[derive(Debug, Clone, Copy)]

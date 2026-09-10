@@ -386,3 +386,146 @@ fn additional_observation_evidence_does_not_invalidate_the_diff() {
     assert_eq!(intensity(&state), 0.0);
     assert!(state.snapshot().activity.is_none());
 }
+
+fn quiet_snapshot(state: &mut State, files: &[(&str, &str)], paths: &[&str], now: Instant) {
+    let snapshot = observed(files);
+    let paths = paths
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect::<std::collections::BTreeSet<_>>();
+    let observations = snapshot
+        .activity
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(path, _)| paths.contains(path))
+        .collect();
+    state.internal_activity(&paths, observations);
+    let request = state.collection_request();
+    state.collection_finished(request.generation, Ok(snapshot), now);
+}
+
+#[test]
+fn internal_changes_rebase_files_without_highlighting_their_ancestors() {
+    // Given
+    let now = Instant::now();
+    let mut state = State::new(false);
+    collect(&mut state, &[("src/a.rs", "before")], now);
+    // When
+    quiet_snapshot(&mut state, &[("src/a.rs", "after")], &["src/a.rs"], now);
+    state.advance_activity(now + Duration::from_secs(1));
+    // Then
+    assert_eq!(intensity(&state), 0.0);
+    assert_eq!(state.activity_intensity(Path::new("src"), true), 0.0);
+    assert_eq!(state.activity_intensity(Path::new(""), true), 0.0);
+}
+
+#[test]
+fn internal_changes_do_not_restart_existing_highlights() {
+    // Given
+    let now = Instant::now();
+    let mut state = active(now);
+    // When
+    quiet_snapshot(
+        &mut state,
+        &[("src/a.rs", "third"), ("src/b.rs", "after")],
+        &["src/a.rs"],
+        now + Duration::from_secs(31),
+    );
+    state.advance_activity(now + Duration::from_secs(31));
+    // Then
+    assert_eq!(intensity(&state), 0.5);
+    state.advance_activity(now + Duration::from_secs(32));
+    assert_eq!(intensity(&state), 0.0);
+}
+
+#[test]
+fn unrelated_external_changes_in_a_mutation_refresh_still_highlight() {
+    // Given
+    let now = Instant::now();
+    let mut state = State::new(false);
+    collect(
+        &mut state,
+        &[("src/a.rs", "before"), ("src/b.rs", "before")],
+        now,
+    );
+    // When
+    quiet_snapshot(
+        &mut state,
+        &[("src/a.rs", "after"), ("src/b.rs", "after")],
+        &["src/a.rs"],
+        now,
+    );
+    state.advance_activity(now + Duration::from_secs(1));
+    // Then
+    assert_eq!(intensity(&state), 0.0);
+    assert_eq!(state.activity_intensity(Path::new("src/b.rs"), false), 1.0);
+}
+
+#[test]
+fn external_edit_after_internal_activity_still_highlights_the_file() {
+    // Given
+    let now = Instant::now();
+    let mut state = State::new(false);
+    collect(&mut state, &[("src/a.rs", "before")], now);
+    quiet_snapshot(&mut state, &[("src/a.rs", "internal")], &["src/a.rs"], now);
+    // When
+    collect(&mut state, &[("src/a.rs", "external")], now);
+    state.advance_activity(now + Duration::from_secs(1));
+    // Then
+    assert_eq!(intensity(&state), 1.0);
+}
+
+#[test]
+fn delayed_watcher_refresh_does_not_highlight_an_internal_change() {
+    // Given
+    let now = Instant::now();
+    let mut state = State::new(false);
+    collect(&mut state, &[("src/a.rs", "before")], now);
+    quiet_snapshot(&mut state, &[("src/a.rs", "after")], &["src/a.rs"], now);
+    // When
+    collect(
+        &mut state,
+        &[("src/a.rs", "after")],
+        now + Duration::from_secs(1),
+    );
+    state.advance_activity(now + Duration::from_secs(2));
+    // Then
+    assert_eq!(intensity(&state), 0.0);
+}
+
+#[test]
+fn rejected_mutation_snapshot_does_not_lose_its_quiet_baseline() {
+    // Given
+    let now = Instant::now();
+    let mut state = State::new(false);
+    collect(&mut state, &[("src/a.rs", "before")], now);
+    let obsolete = state.collection_request();
+    let latest = state.collection_request();
+    let after = observed(&[("src/a.rs", "after")]);
+    // When
+    state.internal_activity(
+        &std::collections::BTreeSet::from(["src/a.rs".into()]),
+        after.activity.clone().unwrap_or_default(),
+    );
+    state.collection_finished(
+        obsolete.generation,
+        Ok(observed(&[("src/a.rs", "after")])),
+        now,
+    );
+    state.collection_finished(latest.generation, Ok(after), now);
+    state.advance_activity(now + Duration::from_secs(1));
+    // Then
+    assert_eq!(intensity(&state), 0.0);
+}
+
+#[test]
+fn internally_removed_paths_leave_no_parent_highlight() {
+    // Given
+    let now = Instant::now();
+    let mut state = active(now);
+    // When
+    quiet_snapshot(&mut state, &[], &["src/a.rs", "src/b.rs"], now);
+    // Then
+    assert_eq!(state.activity_intensity(Path::new(""), true), 0.0);
+}

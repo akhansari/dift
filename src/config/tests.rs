@@ -624,3 +624,26 @@ fn line_number_toggle_binding_can_be_replaced() -> Result<(), ConfigError> {
     );
     Ok(())
 }
+
+#[test]
+fn stage_binding_is_generated_and_can_be_reassigned() -> Result<(), ConfigError> {
+    // Given
+    let template = Config::template();
+    // When
+    let config = Config::parse(&template.replace("toggle-stage \"space\"", "toggle-stage \"x\""))?;
+    // Then
+    assert!(template.contains("toggle-stage \"space\""));
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Tree, KeyEvent::from(KeyCode::Char('x'))),
+        Some(Action::ToggleStage)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Input, KeyEvent::from(KeyCode::Char(' '))),
+        None
+    );
+    Ok(())
+}

@@ -1,23 +1,36 @@
+mod mutations;
+use mutations::Mutations;
+
 use super::watch::{Batch, EventFilter, Refresh, Watches};
 use crate::{
-    git::{Collector, GitError, Limits, Mode, Repository},
-    model::Snapshot,
+    git::{Collector, GitError, Limits, Mode, Repository, StageOutcome, StageTarget},
+    model::{ActivityObservations, Snapshot},
     state::CollectionRequest,
 };
 use std::{
+    collections::BTreeSet,
     io,
+    path::PathBuf,
     sync::{Arc, atomic::AtomicBool, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
 pub(super) enum Update {
+    MutationFinished(Result<StageOutcome, GitError>),
+    ObservedActivity(ActivityObservations),
+    InternalActivity(BTreeSet<PathBuf>, ActivityObservations, BTreeSet<PathBuf>),
     Started(u64),
     Finished(u64, Result<Snapshot, GitError>),
 }
 
+enum Request {
+    Collect(CollectionRequest),
+    Toggle(StageTarget, CollectionRequest),
+}
+
 pub(super) struct Worker {
-    requests: mpsc::Sender<CollectionRequest>,
+    requests: mpsc::Sender<Request>,
     pub updates: mpsc::Receiver<Update>,
     pub degraded: Arc<AtomicBool>,
     #[cfg(test)]
@@ -49,6 +62,7 @@ impl Worker {
                 let mut refresh = Refresh::new(Instant::now());
                 let mut pending = Batch::default();
                 let mut coverage_refresh = false;
+                let mut internal_mutations = Mutations::default();
                 #[cfg(test)]
                 let mut initialized_send = Some(initialized_send);
                 loop {
@@ -58,9 +72,17 @@ impl Worker {
                     } else {
                         Duration::from_millis(33)
                     };
+                    let mut mutations = Vec::new();
+                    let mut accept = |request| match request {
+                        Request::Collect(request) => latest = request,
+                        Request::Toggle(target, request) => {
+                            latest = request;
+                            mutations.push(target);
+                        }
+                    };
                     let mut force = match receive.recv_timeout(timeout) {
                         Ok(request) => {
-                            latest = request;
+                            accept(request);
                             true
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => false,
@@ -68,9 +90,65 @@ impl Worker {
                     };
                     force |= coverage_changed;
                     for request in receive.try_iter() {
-                        latest = request;
+                        accept(request);
                         force = true;
                     }
+                    let outcomes: Vec<_> = mutations
+                        .into_iter()
+                        .map(|target| {
+                            if watching {
+                                // Observe external edits before the command can change their
+                                // category or incorporate them into the index.
+                                let guard = internal_mutations.before_refresh(&paths);
+                                let head = paths.activity_head().ok();
+                                let before = (|| -> Result<Snapshot, GitError> {
+                                    if collector.is_none() {
+                                        collector = Some(Collector::new(paths.clone())?);
+                                    }
+                                    let Some(collector) = &mut collector else {
+                                        return Err(GitError::InvalidOutput(
+                                            "Missing collector".into(),
+                                        ));
+                                    };
+                                    collector.snapshot_with_whitespace(
+                                        &mode,
+                                        limits,
+                                        &latest.loaded,
+                                        latest.whitespace,
+                                    )
+                                })();
+                                if let Some(update) =
+                                    internal_mutations.finish(&paths, &guard, &before)
+                                {
+                                    let _ = send.send(update);
+                                }
+                                if let Ok(snapshot) = &before {
+                                    if let Some(observations) = &snapshot.activity {
+                                        let _ = send
+                                            .send(Update::ObservedActivity(observations.clone()));
+                                    }
+                                } else {
+                                    // Without the pre-command observation, attribution for
+                                    // overlapping operations is ambiguous.
+                                    internal_mutations.invalidate();
+                                }
+                                let report = paths.toggle_stage_tracked(&target);
+                                internal_mutations.record(
+                                    report.attribution,
+                                    before
+                                        .as_ref()
+                                        .ok()
+                                        .and_then(|snapshot| snapshot.activity.as_ref()),
+                                    head.as_deref(),
+                                );
+                                report.outcome
+                            } else {
+                                Err(GitError::Command(
+                                    "Staging is unavailable in comparison mode".into(),
+                                ))
+                            }
+                        })
+                        .collect();
                     let dirty = inbox.drain_into(&mut pending);
                     let now = Instant::now();
                     let periodic = watching && refresh.periodic_due(now, interval);
@@ -84,6 +162,7 @@ impl Worker {
                         continue;
                     }
                     let mut reconcile_watches = false;
+                    let before_refresh = internal_mutations.before_refresh(&paths);
                     let result = (|| -> Result<Option<Snapshot>, GitError> {
                         if collector.is_none() {
                             collector = Some(Collector::new(paths.clone())?);
@@ -126,12 +205,20 @@ impl Worker {
                             Err(error)
                         }
                     };
+                    if let Some(update) =
+                        internal_mutations.finish(&paths, &before_refresh, &result)
+                    {
+                        let _ = send.send(update);
+                    }
                     refresh.completed(Instant::now());
                     if send
                         .send(Update::Finished(latest.generation, result))
                         .is_err()
                     {
                         break;
+                    }
+                    for outcome in outcomes {
+                        let _ = send.send(Update::MutationFinished(outcome));
                     }
                     if reconcile_watches
                         && let (Some(filter), Some(collector)) = (&mut filter, &collector)
@@ -157,11 +244,16 @@ impl Worker {
         })
     }
 
-    pub(super) fn request(
-        &self,
-        request: CollectionRequest,
-    ) -> Result<(), mpsc::SendError<CollectionRequest>> {
-        self.requests.send(request)
+    pub(super) fn toggle(&self, target: StageTarget, request: CollectionRequest) -> io::Result<()> {
+        self.requests
+            .send(Request::Toggle(target, request))
+            .map_err(|_| io::Error::other("Git worker stopped"))
+    }
+
+    pub(super) fn request(&self, request: CollectionRequest) -> Result<(), io::Error> {
+        self.requests
+            .send(Request::Collect(request))
+            .map_err(|_| io::Error::other("Git worker stopped"))
     }
 }
 
@@ -384,6 +476,60 @@ mod tests {
         let snapshot = wait_for_source(&worker, "src/nested/file.txt", "startup edit\n")?;
         // Then
         assert_eq!(snapshot.changes.len(), 1);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    use crate::{AppResult, ui::fixtures::Fixture};
+    #[test]
+    fn refresh_coalescing_keeps_mutations_and_publishes_their_snapshot_first() -> AppResult<()> {
+        // Given
+        let fixture = Fixture::new("")?;
+        fixture.write("tracked.txt", "changed")?;
+        let worker = Worker::spawn(
+            fixture.repo()?,
+            Mode::Watch,
+            Limits::default(),
+            Duration::from_secs(3600),
+        )?;
+        // When
+        worker.toggle(
+            StageTarget::File("tracked.txt".into()),
+            CollectionRequest::default(),
+        )?;
+        worker.request(CollectionRequest::default())?;
+        // Then
+        let mut refreshed = false;
+        let mut quiet = false;
+        loop {
+            match worker.updates.recv_timeout(Duration::from_secs(4))? {
+                Update::Finished(_, snapshot) => {
+                    assert!(
+                        snapshot?
+                            .changes
+                            .iter()
+                            .any(|change| change.category == crate::model::Category::Staged)
+                    );
+                    assert!(quiet);
+                    refreshed = true;
+                }
+                Update::MutationFinished(outcome) => {
+                    assert_eq!(outcome?, StageOutcome::Staged);
+                    assert!(refreshed);
+                    break;
+                }
+                Update::InternalActivity(paths, observations, external) => {
+                    assert!(external.is_empty());
+                    assert_eq!(paths, BTreeSet::from(["tracked.txt".into()]));
+                    assert!(observations.contains_key(std::path::Path::new("tracked.txt")));
+                    quiet = true;
+                }
+                Update::Started(_) | Update::ObservedActivity(_) => {}
+            }
+        }
         Ok(())
     }
 }

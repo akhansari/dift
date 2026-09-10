@@ -52,6 +52,15 @@ pub(super) struct ActivityState {
 }
 
 impl ActivityState {
+    pub(super) fn rebase(&mut self, paths: &BTreeSet<PathBuf>, observations: ActivityObservations) {
+        self.pulses
+            .retain(|path, _| !paths.contains(path) || observations.contains_key(path));
+        if let Some(baseline) = &mut self.baseline {
+            baseline.retain(|path, _| !paths.contains(path));
+            baseline.extend(observations);
+        }
+    }
+
     pub(super) fn observe(&mut self, observations: Option<ActivityObservations>, now: Instant) {
         let Some(observations) = observations else {
             return;
@@ -69,22 +78,18 @@ impl ActivityState {
                         })
                 });
                 if changed {
-                    let from = self
-                        .pulses
-                        .get(path)
-                        .map_or(0.0, |pulse| pulse.intensity(now));
-                    self.pulses.insert(
-                        path.clone(),
-                        Pulse {
-                            started: now,
-                            from,
-                            dismissed: None,
-                        },
-                    );
+                    start_pulse(&mut self.pulses, path, now);
                 }
             }
         }
         self.baseline = Some(observations);
+        self.now = Some(now);
+    }
+
+    pub(super) fn highlight(&mut self, paths: &BTreeSet<PathBuf>, now: Instant) {
+        for path in paths {
+            start_pulse(&mut self.pulses, path, now);
+        }
         self.now = Some(now);
     }
 
@@ -128,4 +133,16 @@ impl ActivityState {
                 .map_or(0.0, |pulse| pulse.intensity(now))
         }
     }
+}
+
+fn start_pulse(pulses: &mut BTreeMap<PathBuf, Pulse>, path: &Path, now: Instant) {
+    let from = pulses.get(path).map_or(0.0, |pulse| pulse.intensity(now));
+    pulses.insert(
+        path.to_owned(),
+        Pulse {
+            started: now,
+            from,
+            dismissed: None,
+        },
+    );
 }

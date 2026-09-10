@@ -96,6 +96,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let mut state = State::with_whitespace(config.split, config.whitespace);
+    let mut staging = false;
     let mut interaction = Interaction::default();
     let mut render_needed = true;
     let mut needs_draw = true;
@@ -110,6 +111,23 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         while let Some(update) = worker_update(collecting.updates.try_recv(), "Git collection")? {
             needs_draw = true;
             match update {
+                collect::Update::MutationFinished(result) => {
+                    staging = false;
+                    state.show_toast(
+                        match result {
+                            Ok(outcome) => outcome.message().into(),
+                            Err(error) => error.to_string(),
+                        },
+                        Instant::now(),
+                    );
+                }
+                collect::Update::ObservedActivity(observations) => {
+                    state.observe_activity(observations, Instant::now());
+                }
+                collect::Update::InternalActivity(paths, observations, external) => {
+                    state.internal_activity(&paths, observations);
+                    state.highlight_activity(&external, Instant::now());
+                }
                 collect::Update::Started(generation) => state.collection_started(generation),
                 collect::Update::Finished(generation, result) => {
                     render_needed |= state
@@ -201,6 +219,20 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         }
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
+        if effects.toggle_stage && !staging {
+            if !watching {
+                state.show_toast(
+                    "Staging is unavailable in comparison mode".into(),
+                    Instant::now(),
+                );
+            } else if let Some(target) = state.stage_target(viewport.1) {
+                collecting.toggle(target, state.collection_request())?;
+                staging = true;
+            } else {
+                state.show_toast("Nothing to stage or unstage".into(), Instant::now());
+            }
+            needs_draw = true;
+        }
         if let Some(position) = effects.open_editor {
             let result = match editor::EditorCommand::prepare(
                 &root,
@@ -589,7 +621,7 @@ fn draw(
             keys(Action::Sidebar),
             keys(Action::Layout),
             keys(Action::Filter),
-            keys(Action::Find),
+            keys(Action::Find).replace("shift-f", "F"),
             keys(Action::Search),
             keys(Action::Help),
             keys(Action::Quit)

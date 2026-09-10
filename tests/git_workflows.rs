@@ -13,6 +13,8 @@ use std::{
 
 #[path = "git_workflows/activity.rs"]
 mod activity;
+#[path = "git_workflows/stage.rs"]
+mod stage;
 #[path = "git_workflows/stats.rs"]
 mod stats;
 #[path = "git_workflows/whitespace.rs"]

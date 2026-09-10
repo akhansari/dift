@@ -10,11 +10,15 @@ use thiserror::Error;
 
 mod changes;
 mod collector;
+mod mutation;
 mod patch;
 mod source;
+mod stage;
 pub use collector::Collector;
 pub(crate) use collector::WatchContext;
+pub(crate) use mutation::{IndexMutation, MutationAttribution};
 pub use patch::parse_patch;
+pub use stage::{StageOutcome, StageTarget};
 
 #[derive(Debug, Error)]
 pub enum GitError {

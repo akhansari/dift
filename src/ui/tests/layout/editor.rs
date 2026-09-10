@@ -264,3 +264,66 @@ fn help_suppresses_editor_launches() {
     assert_eq!(effects.open_editor, None);
     assert!(state.help());
 }
+
+#[test]
+fn stage_target_follows_the_visible_diff_file() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 12);
+    prepare(&mut state, 100, 20)?;
+    state.focus_diff();
+    // When
+    let target = state.stage_target(17);
+    // Then
+    assert_eq!(
+        target,
+        Some(crate::git::StageTarget::File("main.rs".into()))
+    );
+    Ok(())
+}
+
+#[test]
+fn tree_root_targets_all_changes() {
+    // Given
+    let state = state_with("main.rs", 12);
+    // When
+    let target = state.stage_target(17);
+    // Then
+    assert_eq!(target, Some(crate::git::StageTarget::Subtree("".into())));
+}
+
+#[test]
+fn space_in_a_prompt_is_text() {
+    // Given
+    let mut state = State::new(false);
+    state.action(Action::Filter, 20, Instant::now());
+    // When
+    let effects = state.handle_key(
+        KeyEvent::from(event::KeyCode::Char(' ')),
+        &Bindings::defaults(),
+        20,
+        Instant::now(),
+    );
+    // Then
+    assert!(!effects.toggle_stage);
+    assert_eq!(
+        state.prompt().map(|prompt| prompt.editor().text()),
+        Some(" ")
+    );
+}
+
+#[test]
+fn help_ignores_space() {
+    // Given
+    let mut state = State::new(false);
+    state.action(Action::Help, 20, Instant::now());
+    // When
+    let effects = state.handle_key(
+        KeyEvent::from(event::KeyCode::Char(' ')),
+        &Bindings::defaults(),
+        20,
+        Instant::now(),
+    );
+    // Then
+    assert!(!effects.toggle_stage);
+    assert!(state.help());
+}

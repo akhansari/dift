@@ -2,11 +2,13 @@ use super::{PromptKind, State, TOAST_DURATION, Toast};
 use crate::{
     git::GitError,
     input::{Action, Bindings, Scope},
-    model::Snapshot,
+    model::{ActivityObservations, Snapshot},
     render::worker::{RenderRequest, RenderResult},
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{
+    collections::BTreeSet,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,6 +26,7 @@ pub struct Effects {
     pub redraw: bool,
     pub render: bool,
     pub collect: bool,
+    pub toggle_stage: bool,
     pub quit: bool,
     pub open_editor: Option<EditorPosition>,
 }
@@ -122,6 +125,22 @@ impl State {
         }
         prompt.filter_deadline = None;
         Effects::draw(self.apply_prompt())
+    }
+
+    pub(crate) fn highlight_activity(&mut self, paths: &BTreeSet<PathBuf>, now: Instant) {
+        self.activity.highlight(paths, now);
+    }
+
+    pub(crate) fn observe_activity(&mut self, observations: ActivityObservations, now: Instant) {
+        self.activity.observe(Some(observations), now);
+    }
+
+    pub(crate) fn internal_activity(
+        &mut self,
+        paths: &BTreeSet<PathBuf>,
+        observations: ActivityObservations,
+    ) {
+        self.activity.rebase(paths, observations);
     }
 
     pub fn collection_started(&mut self, generation: u64) {
@@ -334,6 +353,7 @@ impl State {
                     self.expand();
                 }
             }
+            Action::ToggleStage => effects.toggle_stage = true,
             Action::Refresh => effects.collect = true,
             Action::OpenEditor => effects.open_editor = Some(EditorPosition::VisibleHunk),
             Action::OpenEditorPlain => effects.open_editor = Some(EditorPosition::Default),

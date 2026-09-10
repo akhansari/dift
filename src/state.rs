@@ -139,6 +139,26 @@ impl State {
                 .map(|section| section.path.as_path())
         }
     }
+    pub fn stage_target(&self, height: usize) -> Option<crate::git::StageTarget> {
+        use crate::git::StageTarget;
+        if self.focus == Scope::Tree {
+            self.tree
+                .rows(false)
+                .iter()
+                .find(|row| row.path == self.selection)
+                .map(|row| {
+                    if row.directory {
+                        StageTarget::Subtree(row.path.clone())
+                    } else {
+                        StageTarget::File(row.path.clone())
+                    }
+                })
+        } else {
+            self.active_file(height)
+                .map(|path| StageTarget::File(path.to_owned()))
+        }
+    }
+
     pub fn editor_target(
         &self,
         height: usize,
