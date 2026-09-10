@@ -90,6 +90,15 @@ pub struct SourceCell {
 pub struct Hit {
     /// Zero-based document row containing the match.
     pub row: usize,
+    /// Display fragments belonging to this occurrence, including wrapped rows.
+    pub fragments: Vec<HitFragment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HitFragment {
+    pub row: usize,
+    /// Terminal columns relative to the diff pane.
+    pub columns: Range<usize>,
 }
 
 /// A rendered file's rows and its working-tree path, including files without source lines.
@@ -371,6 +380,12 @@ impl CachedLayout {
     fn bytes(&self) -> usize {
         self.prepared.bytes()
             + self.document.hunk_sections.len() * size_of::<HunkSection>()
+            + self
+                .document
+                .hits
+                .iter()
+                .map(|hit| size_of::<Hit>() + hit.fragments.len() * size_of::<HitFragment>())
+                .sum::<usize>()
             + self
                 .document
                 .rows
@@ -767,14 +782,22 @@ fn compose(
                 path: change.path.clone(),
             });
         }
-        result.hits.extend(
-            file.hits
-                .iter()
-                .filter(|hit| hit.row < count)
-                .map(|hit| Hit {
+        result
+            .hits
+            .extend(file.hits.iter().filter(|hit| hit.row < count).map(|hit| {
+                Hit {
                     row: offset + hit.row,
-                }),
-        );
+                    fragments: hit
+                        .fragments
+                        .iter()
+                        .filter(|fragment| fragment.row < count)
+                        .map(|fragment| HitFragment {
+                            row: offset + fragment.row,
+                            columns: fragment.columns.clone(),
+                        })
+                        .collect(),
+                }
+            }));
         result.hunk_sections.extend(
             file.hunk_sections
                 .iter()

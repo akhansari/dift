@@ -231,6 +231,8 @@ fn search_matches_remain_below_the_sticky_header() -> AppResult<()> {
     // Then
     assert!(line(&buffer, 0).contains("main.rs"));
     assert!(line(&buffer, 2).contains("row 20"));
+    assert_eq!(buffer[(14, 2)].bg, Color::Rgb(184, 92, 31));
+    assert_ne!(buffer[(14, 0)].bg, Color::Rgb(184, 92, 31));
     Ok(())
 }
 

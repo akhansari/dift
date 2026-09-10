@@ -400,6 +400,35 @@ fn draw(
         .map(|r| r.line.clone())
         .collect();
     frame.render_widget(Paragraph::new(rows).style(palette.base()), inner);
+    if let Some(hit) = state
+        .match_index()
+        .and_then(|index| state.document().hits.get(index))
+    {
+        let style = Style::default()
+            .bg(Color::Rgb(184, 92, 31))
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        for fragment in &hit.fragments {
+            let Some(row) = fragment.row.checked_sub(state.scroll()) else {
+                continue;
+            };
+            if row >= usize::from(inner.height) {
+                continue;
+            }
+            let start = fragment.columns.start.min(usize::from(inner.width));
+            let end = fragment.columns.end.min(usize::from(inner.width));
+            frame.buffer_mut().set_style(
+                Rect::new(
+                    inner.x + start as u16,
+                    inner.y + row as u16,
+                    (end - start) as u16,
+                    1,
+                ),
+                style,
+            );
+        }
+    }
+
     if let Some((start, header_area)) = view.header(state) {
         let header: Vec<_> = state
             .document()

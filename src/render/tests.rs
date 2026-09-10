@@ -4,6 +4,7 @@ use crate::model::Hunk;
 mod editor;
 mod headers;
 mod refinement;
+mod search;
 
 fn snapshot() -> Snapshot {
     Snapshot {
@@ -126,6 +127,7 @@ fn a_highlighted_file_is_published_with_the_searchable_plain_remainder() -> crat
     assert_eq!(source_content(enriched), source_content(plain));
     assert_eq!(enriched.hits.len(), 1);
     assert_eq!(enriched.hits[0].row, plain.hits[0].row);
+    assert_eq!(enriched.hits[0].fragments, plain.hits[0].fragments);
     assert_ne!(
         source_foreground(enriched, "const")?,
         source_foreground(plain, "const")?

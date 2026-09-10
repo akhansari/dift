@@ -8,6 +8,7 @@ use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 mod editor;
 mod headers;
 mod mouse;
+mod search;
 mod selection;
 mod stats;
 

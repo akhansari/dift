@@ -50,7 +50,7 @@ struct CellSpec<'a> {
 struct CellRow {
     spans: Vec<Span<'static>>,
     anchor: Option<Anchor>,
-    hits: usize,
+    hits: Vec<(usize, Range<usize>)>,
     width: usize,
     code_start: usize,
     source: Vec<SourceCell>,
@@ -167,7 +167,7 @@ fn cells(
             byte,
             text: Arc::clone(&source_text),
         }),
-        hits: 0,
+        hits: Vec::new(),
         width: prefix_width,
         code_start: prefix_width,
         source: Vec::new(),
@@ -207,7 +207,7 @@ fn cells(
                 .fg(Color::Rgb(25, 28, 35))
                 .add_modifier(Modifier::BOLD);
         }
-        for (part, glyph) in text.chars().enumerate() {
+        for glyph in text.chars() {
             let glyph_width = UnicodeWidthChar::width(glyph).unwrap_or(0);
             if row.width > prefix_width && row.width + glyph_width > width {
                 row.spans.push(Span::styled(
@@ -220,11 +220,23 @@ fn cells(
                 }
                 row = make_row(byte, false);
             }
-            if part == 0 {
-                row.hits += matches
-                    .iter()
-                    .filter(|r| r.start >= byte && r.start < end)
-                    .count();
+            for (index, _) in matches
+                .iter()
+                .enumerate()
+                .filter(|(_, range)| range.start < end && range.end > byte)
+            {
+                let start = if glyph_width == 0 {
+                    row.source
+                        .last()
+                        .map_or(row.width, |cell| cell.columns.start)
+                } else {
+                    row.width
+                };
+                if let Some((_, columns)) = row.hits.iter_mut().find(|(hit, _)| *hit == index) {
+                    columns.end = row.width + glyph_width;
+                } else {
+                    row.hits.push((index, start..row.width + glyph_width));
+                }
             }
             if let Some(previous) = row.spans.last_mut().filter(|s| s.style == style) {
                 previous.content.to_mut().push(glyph);
@@ -262,7 +274,7 @@ fn cells(
                         base.fg(palette.muted),
                     )],
                     anchor: None,
-                    hits: 0,
+                    hits: Vec::new(),
                     width,
                     code_start: width,
                     source: Vec::new(),
@@ -270,6 +282,29 @@ fn cells(
         );
     }
     Ok(rows)
+}
+
+/// Keep one navigation entry per occurrence while collecting its wrapped fragments.
+fn append_hits(
+    document: &mut Document,
+    hits: Vec<(usize, Range<usize>)>,
+    indices: &mut std::collections::BTreeMap<usize, usize>,
+    column_offset: usize,
+) {
+    for (occurrence, columns) in hits {
+        let index = *indices.entry(occurrence).or_insert_with(|| {
+            let index = document.hits.len();
+            document.hits.push(Hit {
+                row: document.rows.len(),
+                fragments: Vec::new(),
+            });
+            index
+        });
+        document.hits[index].fragments.push(HitFragment {
+            row: document.rows.len(),
+            columns: column_offset + columns.start..column_offset + columns.end,
+        });
+    }
 }
 
 fn append_unified(
@@ -287,6 +322,7 @@ fn append_unified(
         ..
     } = *context;
     let old = source.new.is_none();
+    let mut hits = std::collections::BTreeMap::new();
     for row in cells(
         context,
         CellSpec {
@@ -302,12 +338,7 @@ fn append_unified(
         limit,
     )? {
         cancel.check()?;
-        document.hits.extend(std::iter::repeat_n(
-            Hit {
-                row: document.rows.len(),
-            },
-            row.hits,
-        ));
+        append_hits(document, row.hits, &mut hits, 0);
         document.rows.push(Arc::new(Row {
             code: row
                 .anchor
@@ -347,12 +378,13 @@ fn append_split(
     let count = a.len().max(b.len());
     let mut a = a.into_iter();
     let mut b = b.into_iter();
+    let mut left_hits = std::collections::BTreeMap::new();
+    let mut right_hits = std::collections::BTreeMap::new();
     for _ in 0..count {
         cancel.check()?;
         let mut spans = Vec::new();
         let mut anchors = Vec::new();
         let mut code = Vec::new();
-        let mut hits = 0;
         if let Some(row) = a.next() {
             if row.anchor.is_some() {
                 code.push(CodeRegion {
@@ -364,7 +396,7 @@ fn append_split(
             }
             spans.extend(row.spans);
             anchors.extend(row.anchor);
-            hits += row.hits;
+            append_hits(document, row.hits, &mut left_hits, 0);
         } else {
             spans.push(Span::styled(" ".repeat(a_width), palette.base()));
         }
@@ -388,16 +420,10 @@ fn append_split(
             }
             spans.extend(row.spans);
             anchors.extend(row.anchor);
-            hits += row.hits;
+            append_hits(document, row.hits, &mut right_hits, a_width + 1);
         } else {
             spans.push(Span::styled(" ".repeat(b_width), palette.base()));
         }
-        document.hits.extend(std::iter::repeat_n(
-            Hit {
-                row: document.rows.len(),
-            },
-            hits,
-        ));
         document.rows.push(Arc::new(Row {
             line: Line::from(spans),
             anchors,

@@ -273,7 +273,10 @@ fn document(lines: &[&str], partial: bool) -> Arc<Document> {
             .iter()
             .enumerate()
             .filter(|(_, text)| text.contains("two"))
-            .map(|(row, _)| Hit { row })
+            .map(|(row, _)| Hit {
+                row,
+                fragments: Vec::new(),
+            })
             .collect(),
         partial,
         ..Document::default()
