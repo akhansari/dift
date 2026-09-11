@@ -654,7 +654,7 @@ fn help_shows_a_scrollbar_in_a_centered_eighty_percent_height_popup() -> AppResu
     assert_eq!(buffer[(98, 2)].symbol(), "┐");
     assert_eq!(buffer[(21, 17)].symbol(), "└");
     assert_eq!(buffer[(98, 17)].symbol(), "┘");
-    assert!(line(&buffer, 2).contains("Keybindings · scroll to explore"));
+    assert!(line(&buffer, 2).contains("Keybindings"));
     assert_eq!(buffer[(97, 3)].symbol(), "┃");
     assert_eq!(buffer[(97, 3)].fg, Palette::new(false).accent);
     assert_eq!(buffer[(97, 16)].symbol(), " ");
@@ -666,13 +666,21 @@ fn help_lists_the_find_binding() -> AppResult<()> {
     // Given
     let mut state = state_with("main.rs", 1);
     state.action(Action::Help, 8, Instant::now());
+    super::super::help::Help::new(
+        Rect::new(0, 0, 120, 20),
+        &Config::default().bindings,
+        &Palette::new(false),
+    )
+    .sync(&mut state);
     state.action(Action::PageDown, 8, Instant::now());
-    state.action(Action::Down, 8, Instant::now());
     // When
     let buffer = render(&state, &Config::default(), 120, 20)?;
     // Then
-    assert!(line(&buffer, 16).contains("shift-f"));
-    assert!(line(&buffer, 16).contains("find"));
+    assert!(
+        (0..20)
+            .map(|y| line(&buffer, y))
+            .any(|row| row.contains("shift-f") && row.contains("Find a file"))
+    );
     Ok(())
 }
 
@@ -753,7 +761,7 @@ fn help_hides_the_active_toast() -> AppResult<()> {
     // Then
     assert_eq!(buffer[(119, 6)].symbol(), " ");
     assert!(!line(&buffer, 7).contains("Whitespace:"));
-    assert!(line(&buffer, 1).contains("Keybindings · scroll to explore"));
+    assert!(line(&buffer, 1).contains("Keybindings"));
     Ok(())
 }
 
@@ -768,7 +776,44 @@ fn help_lists_the_line_number_toggle() -> AppResult<()> {
     assert!(
         (0..20)
             .map(|y| line(&buffer, y))
-            .any(|row| row.contains("shift-l") && row.contains("toggle-line-numbers"))
+            .any(|row| row.contains("shift-l") && row.contains("line numbers"))
     );
+    Ok(())
+}
+
+#[test]
+fn narrow_help_wraps_descriptions_below_the_keys() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 1);
+    state.action(Action::Help, 8, Instant::now());
+    // When
+    let buffer = render(&state, &Config::default(), 32, 30)?;
+    // Then
+    let rows: Vec<_> = (0..30).map(|y| line(&buffer, y)).collect();
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("  Show or hide the file"))
+    );
+    assert!(rows.iter().any(|row| row.contains("  tree")));
+    Ok(())
+}
+
+#[test]
+fn help_uses_the_last_interior_row_for_content() -> AppResult<()> {
+    // Given
+    let mut state = state_with("main.rs", 1);
+    let config = Config::default();
+    state.action(Action::Help, 8, Instant::now());
+    super::super::help::Help::new(
+        Rect::new(0, 0, 120, 20),
+        &config.bindings,
+        &Palette::new(false),
+    )
+    .sync(&mut state);
+    state.action(Action::Last, 8, Instant::now());
+    // When
+    let buffer = render(&state, &config, 120, 20)?;
+    // Then
+    assert!(line(&buffer, 16).contains("Delete text after the cursor"));
     Ok(())
 }

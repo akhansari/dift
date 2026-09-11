@@ -267,15 +267,25 @@ impl State {
             return Effects::draw(changed);
         }
         if self.help {
-            match action {
-                Action::Cancel | Action::Help => self.help = false,
-                Action::Down => self.help_scroll = self.help_scroll.saturating_add(1),
-                Action::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
-                Action::PageDown => self.help_scroll = self.help_scroll.saturating_add(height / 2),
-                Action::PageUp => self.help_scroll = self.help_scroll.saturating_sub(height / 2),
-                _ => {}
-            }
-            return Effects::draw(false);
+            let redraw = match action {
+                Action::Cancel | Action::Help => {
+                    self.help = false;
+                    true
+                }
+                Action::Down => self.scroll_help(1, true),
+                Action::Up => self.scroll_help(1, false),
+                Action::PageDown => self.scroll_help(self.help_height.max(1), true),
+                Action::PageUp => self.scroll_help(self.help_height.max(1), false),
+                Action::HalfDown => self.scroll_help((self.help_height / 2).max(1), true),
+                Action::HalfUp => self.scroll_help((self.help_height / 2).max(1), false),
+                Action::First => self.scroll_help(usize::MAX, false),
+                Action::Last => self.scroll_help(usize::MAX, true),
+                _ => false,
+            };
+            return Effects {
+                redraw,
+                ..Effects::default()
+            };
         }
         let selection = self.selection.clone();
         let mut effects = Effects::draw(false);

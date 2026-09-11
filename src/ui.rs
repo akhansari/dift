@@ -5,6 +5,7 @@ mod discard;
 mod editor;
 #[cfg(test)]
 mod fixtures;
+mod help;
 mod selection;
 mod stats;
 mod tree;
@@ -168,6 +169,10 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         }
         let size = terminal.size()?;
         let view = ViewAreas::new(Rect::new(0, 0, size.width, size.height), state.sidebar());
+        if state.help() {
+            help::Help::new(view.area, &config.bindings, &Palette::new(config.light))
+                .sync(&mut state);
+        }
         let new_viewport = view.viewport();
         if viewport != new_viewport {
             viewport = new_viewport;
@@ -350,6 +355,7 @@ fn panes(body: Rect, sidebar: bool) -> (Rect, Rect) {
 
 /// Shared geometry for drawing, wrapping, and input routing.
 struct ViewAreas {
+    area: Rect,
     tree: Rect,
     diff: Rect,
     diff_content: Rect,
@@ -368,7 +374,24 @@ impl ViewAreas {
         now: Instant,
     ) -> Effects {
         let mut redraw = interaction.selection.reconcile(state, self);
-        if state.help() || state.prompt().is_some() || state.discard_menu().is_some() {
+        if state.help() {
+            let help = help::Help::new(self.area, &config.bindings, &Palette::new(config.light));
+            help.sync(state);
+            if help.rect.contains((mouse.column, mouse.row).into())
+                && mouse.modifiers.is_empty()
+                && matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                )
+            {
+                redraw |= state.scroll_help(3, mouse.kind == MouseEventKind::ScrollDown);
+            }
+            return Effects {
+                redraw,
+                ..Effects::default()
+            };
+        }
+        if state.prompt().is_some() || state.discard_menu().is_some() {
             return Effects {
                 redraw,
                 ..Effects::default()
@@ -434,6 +457,7 @@ impl ViewAreas {
         .split(area);
         let (tree, diff) = panes(rows[0], sidebar);
         Self {
+            area,
             tree,
             diff,
             // Reserve the scrollbar column even when the document fits.
@@ -691,70 +715,7 @@ fn draw(
         draw_toast(frame, message, body, &palette);
     }
     if state.help() {
-        let width = area.width.saturating_sub(4).min(78);
-        let height = (u32::from(area.height) * 80 / 100) as u16;
-        let rect = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
-            width,
-            height,
-        );
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Keybindings · scroll to explore ")
-            .border_style(Style::default().fg(palette.accent));
-        let inner = block.inner(rect);
-        frame.render_widget(Clear, rect);
-        frame.render_widget(block, rect);
-        let mut lines = Vec::new();
-        for scope in Scope::ALL {
-            lines.push(Line::styled(
-                format!(" {}", scope.name().to_uppercase()),
-                palette
-                    .base()
-                    .fg(palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            if let Some(actions) = config.bindings.0.get(&scope) {
-                for action in actions.keys() {
-                    lines.push(Line::raw(format!(
-                        " {:<24} {}",
-                        config.bindings.keys(scope, *action),
-                        action.name()
-                    )));
-                }
-            }
-        }
-        let maximum = lines.len().saturating_sub(inner.height as usize);
-        let scroll = help_scroll.min(maximum);
-        let content: Vec<_> = lines
-            .into_iter()
-            .skip(scroll)
-            .take(inner.height as usize)
-            .collect();
-        frame.render_widget(
-            Paragraph::new(content).style(palette.base()),
-            Rect {
-                width: inner.width.saturating_sub(1),
-                ..inner
-            },
-        );
-        if !inner.is_empty() && maximum > 0 {
-            let mut scrollbar_state = ScrollbarState::new(maximum + 1)
-                .position(scroll)
-                .viewport_content_length(inner.height as usize);
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_symbol(Some(" "))
-                    .thumb_symbol("┃")
-                    .track_style(palette.base())
-                    .thumb_style(palette.base().fg(palette.accent)),
-                inner,
-                &mut scrollbar_state,
-            );
-        }
+        help::Help::new(area, &config.bindings, &palette).draw(frame, help_scroll, &palette);
     }
     discard::draw(frame, state, config, &palette);
 }

@@ -160,7 +160,8 @@ fn help_blocks_diff_wheel_scrolling() -> AppResult<()> {
     let effects = wheel(&mut state, MouseEventKind::ScrollDown, 40, 2);
     // Then
     assert_eq!(state.scroll(), 0);
-    assert_eq!(effects, Effects::default());
+    assert_eq!(state.help_scroll(), 3);
+    assert!(effects.redraw);
     Ok(())
 }
 
@@ -257,6 +258,20 @@ fn clicking_diff_does_not_scroll_it() -> AppResult<()> {
     // When
     let effects = wheel(&mut state, MouseEventKind::Down(MouseButton::Left), 40, 2);
     // Then
+    assert_eq!(state.scroll(), 0);
+    assert_eq!(effects, Effects::default());
+    Ok(())
+}
+
+#[test]
+fn wheel_outside_help_does_not_scroll_either_view() -> AppResult<()> {
+    // Given
+    let mut state = document(40)?;
+    state.action(Action::Help, 9, Instant::now());
+    // When
+    let effects = wheel(&mut state, MouseEventKind::ScrollDown, 0, 0);
+    // Then
+    assert_eq!(state.help_scroll(), 0);
     assert_eq!(state.scroll(), 0);
     assert_eq!(effects, Effects::default());
     Ok(())

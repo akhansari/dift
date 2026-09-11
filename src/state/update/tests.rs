@@ -630,3 +630,68 @@ fn hidden_line_numbers_survive_layout_and_snapshot_changes() {
     assert!(!request.show_line_numbers);
     assert!(request.split);
 }
+
+#[test]
+fn help_moves_up_immediately_after_excess_down_input() {
+    // Given
+    let mut state = State::new(false);
+    state.resize_help(30, 10);
+    state.action(Action::Help, 90, Instant::now());
+    state.action(Action::Last, 90, Instant::now());
+    state.action(Action::Down, 90, Instant::now());
+    state.action(Action::PageDown, 90, Instant::now());
+    // When
+    state.action(Action::Up, 90, Instant::now());
+    // Then
+    assert_eq!(state.help_scroll(), 19);
+}
+
+#[test]
+fn help_pages_by_its_own_viewport_height() {
+    // Given
+    let mut state = State::new(false);
+    state.resize_help(30, 10);
+    state.action(Action::Help, 90, Instant::now());
+    // When
+    state.action(Action::PageDown, 90, Instant::now());
+    // Then
+    assert_eq!(state.help_scroll(), 10);
+}
+
+#[test]
+fn growing_help_clamps_the_stored_position() {
+    // Given
+    let mut state = State::new(false);
+    state.resize_help(30, 10);
+    state.action(Action::Help, 90, Instant::now());
+    state.action(Action::Last, 90, Instant::now());
+    // When
+    state.resize_help(30, 25);
+    // Then
+    assert_eq!(state.help_scroll(), 5);
+}
+
+#[test]
+fn help_half_page_uses_its_own_height() {
+    // Given
+    let mut state = State::new(false);
+    state.resize_help(30, 10);
+    state.action(Action::Help, 90, Instant::now());
+    // When
+    state.action(Action::HalfDown, 90, Instant::now());
+    // Then
+    assert_eq!(state.help_scroll(), 5);
+}
+
+#[test]
+fn help_home_returns_to_the_beginning() {
+    // Given
+    let mut state = State::new(false);
+    state.resize_help(30, 10);
+    state.action(Action::Help, 90, Instant::now());
+    state.action(Action::Last, 90, Instant::now());
+    // When
+    state.action(Action::First, 90, Instant::now());
+    // Then
+    assert_eq!(state.help_scroll(), 0);
+}

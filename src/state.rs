@@ -82,6 +82,8 @@ pub struct State {
     diff: DiffState,
     tree: TreeIndex,
     help_scroll: usize,
+    help_height: usize,
+    help_max_scroll: usize,
     /// Most recently collected repository changes.
     snapshot: Arc<Snapshot>,
     /// Selected file or directory; an empty path selects the root.
@@ -198,6 +200,22 @@ impl State {
     pub fn help_scroll(&self) -> usize {
         self.help_scroll
     }
+    pub(crate) fn resize_help(&mut self, rows: usize, height: usize) {
+        self.help_height = height;
+        self.help_max_scroll = rows.saturating_sub(height);
+        self.help_scroll = self.help_scroll.min(self.help_max_scroll);
+    }
+
+    pub(crate) fn scroll_help(&mut self, amount: usize, down: bool) -> bool {
+        let previous = self.help_scroll;
+        self.help_scroll = if down {
+            previous.saturating_add(amount).min(self.help_max_scroll)
+        } else {
+            previous.saturating_sub(amount)
+        };
+        previous != self.help_scroll
+    }
+
     pub fn focus(&self) -> Scope {
         self.focus
     }
@@ -236,6 +254,8 @@ impl State {
             collection: CollectionState::new(whitespace),
             tree,
             help_scroll: 0,
+            help_height: 0,
+            help_max_scroll: 0,
             snapshot,
             selection: PathBuf::new(),
             collapsed,
