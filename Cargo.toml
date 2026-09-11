@@ -13,6 +13,7 @@ authors = ["Amin Khansari"]
 exclude = ["/dist/**"]
 
 [dependencies]
+alacritty_terminal = { version = "0.26.0", default-features = false }
 base64 = "0.23.1"
 thiserror = "2.0.20"
 gix = { version = "0.87.1", default-features = false, features = [
@@ -49,10 +50,11 @@ test = false
 bench = false
 harness = false
 
-[target.'cfg(unix)'.dev-dependencies]
-alacritty_terminal = { version = "0.26.0", default-features = false }
-memmap2 = "0.9"
+[target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["event", "process", "termios"] }
 rustix-openpty = "0.2"
+
+[target.'cfg(unix)'.dev-dependencies]
+memmap2 = "0.9"
 serde_json = "1"
 tempfile = "3.27"

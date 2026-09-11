@@ -1,5 +1,6 @@
 use super::*;
 mod activity;
+mod commit;
 mod layout;
 mod tree_view;
 

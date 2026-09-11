@@ -1,14 +1,6 @@
+use super::terminal::{self, TerminalError};
 use crate::state::EditorTarget;
-use ratatui::{
-    DefaultTerminal,
-    crossterm::{
-        event::{
-            DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        },
-        execute,
-        terminal::{EnterAlternateScreen, enable_raw_mode},
-    },
-};
+use ratatui::DefaultTerminal;
 use std::{
     ffi::{OsStr, OsString},
     fs, io,
@@ -42,14 +34,6 @@ pub(super) enum EditorError {
         variable: &'static str,
         status: ExitStatus,
     },
-}
-
-#[derive(Debug, Error)]
-pub(super) enum TerminalError {
-    #[error("Suspend dift terminal: {0}")]
-    Suspend(#[source] io::Error),
-    #[error("Resume dift terminal: {0}")]
-    Resume(#[source] io::Error),
 }
 
 /// A validated target and editor command, prepared before handing over the terminal.
@@ -124,10 +108,7 @@ impl EditorCommand {
         self,
         terminal: &mut DefaultTerminal,
     ) -> Result<Result<(), EditorError>, TerminalError> {
-        suspend(terminal).map_err(TerminalError::Suspend)?;
-        let result = self.run();
-        resume(terminal).map_err(TerminalError::Resume)?;
-        Ok(result)
+        terminal::with_suspended(terminal, || Ok(self.run()))
     }
 }
 
@@ -195,26 +176,6 @@ fn literal_command(bytes: &[u8]) -> bool {
         }
     }
     quote.is_none()
-}
-
-fn suspend(terminal: &mut DefaultTerminal) -> io::Result<()> {
-    execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste)?;
-    terminal.show_cursor()?;
-    ratatui::try_restore()
-}
-
-fn resume(terminal: &mut DefaultTerminal) -> io::Result<()> {
-    // Restore modes directly so repeated launches do not accumulate panic hooks.
-    enable_raw_mode()?;
-    execute!(
-        io::stdout(),
-        EnterAlternateScreen,
-        EnableBracketedPaste,
-        EnableMouseCapture
-    )?;
-    terminal.hide_cursor()?;
-    // A fullscreen resize resets the back buffer without querying the cursor position.
-    terminal.resize(terminal.size()?.into())
 }
 
 #[cfg(test)]

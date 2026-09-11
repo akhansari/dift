@@ -194,6 +194,12 @@ impl Session {
         Ok(())
     }
 
+    pub fn output_contains(&self, bytes: &[u8]) -> bool {
+        self.recent
+            .windows(bytes.len())
+            .any(|window| window == bytes)
+    }
+
     pub fn wait(&mut self, text: &str) -> Result {
         self.wait_for(&format!("text {text:?}"), WAIT, |screen| {
             screen.contains(text)

@@ -29,11 +29,13 @@ pub struct Effects {
     pub toggle_stage: bool,
     pub open_discard: bool,
     pub confirm_discard: bool,
+    pub open_commit: bool,
+    pub submit_commit: bool,
     pub quit: bool,
     pub open_editor: Option<EditorPosition>,
 }
 impl Effects {
-    fn draw(render: bool) -> Self {
+    pub(super) fn draw(render: bool) -> Self {
         Self {
             redraw: true,
             render,
@@ -204,6 +206,9 @@ impl State {
         height: usize,
         now: Instant,
     ) -> Effects {
+        if self.commit_dialog().is_some() {
+            return self.commit_key(key, bindings);
+        }
         if self.discard.is_some() {
             if key.kind != ratatui::crossterm::event::KeyEventKind::Press {
                 return Effects::default();
@@ -237,6 +242,9 @@ impl State {
     }
 
     pub fn paste(&mut self, text: &str, now: Instant) -> Effects {
+        if self.commit_dialog().is_some() {
+            return self.commit_paste(text);
+        }
         if self.discard.is_some() {
             return Effects::default();
         }
@@ -248,6 +256,9 @@ impl State {
     }
 
     pub fn action(&mut self, action: Action, height: usize, now: Instant) -> Effects {
+        if self.commit_dialog().is_some() {
+            return self.commit_action(action);
+        }
         if self.discard.is_some() {
             return self.discard_action(action);
         }
@@ -385,6 +396,7 @@ impl State {
             }
             Action::ToggleStage => effects.toggle_stage = true,
             Action::Discard => effects.open_discard = true,
+            Action::Commit => effects.open_commit = true,
             Action::Refresh => effects.collect = true,
             Action::OpenEditor => effects.open_editor = Some(EditorPosition::VisibleHunk),
             Action::OpenEditorPlain => effects.open_editor = Some(EditorPosition::Default),

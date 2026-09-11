@@ -1,6 +1,7 @@
 mod activity;
 mod clipboard;
 mod collect;
+mod commit;
 mod discard;
 mod editor;
 #[cfg(test)]
@@ -8,6 +9,7 @@ mod fixtures;
 mod help;
 mod selection;
 mod stats;
+mod terminal;
 mod tree;
 mod watch;
 
@@ -58,7 +60,7 @@ impl Interaction {
         height: usize,
         now: Instant,
     ) -> Effects {
-        if state.discard_menu().is_some() {
+        if state.discard_menu().is_some() || state.commit_dialog().is_some() {
             self.selection.clear();
             return state.handle_key(key, bindings, height, now);
         }
@@ -103,6 +105,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let mut state = State::with_whitespace(config.split, config.whitespace);
     let mut mutation_busy = false;
+    let mut committing: Option<commit::Session> = None;
     let mut interaction = Interaction::default();
     let mut render_needed = true;
     let mut needs_draw = true;
@@ -114,6 +117,15 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         degraded.load(Ordering::Relaxed),
     ));
     loop {
+        if let Some(session) = &mut committing
+            && let Some(result) = session.update(&mut terminal)?
+        {
+            committing = None;
+            mutation_busy = false;
+            state.commit_finished(result);
+            collecting.request(state.collection_request())?;
+            needs_draw = true;
+        }
         while let Some(update) = worker_update(collecting.updates.try_recv(), "Git collection")? {
             needs_draw = true;
             match update {
@@ -164,6 +176,9 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
             }
         }
         let size = terminal.size()?;
+        if let Some(session) = &mut committing {
+            session.resize(size.width, size.height)?;
+        }
         let view = ViewAreas::new(Rect::new(0, 0, size.width, size.height), state.sidebar());
         if state.help() {
             help::Help::new(view.area, &config.bindings, &Palette::new(config.light))
@@ -250,6 +265,40 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         }
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
+        if effects.open_commit && !mutation_busy {
+            if watching {
+                state.begin_commit();
+                interaction.selection.clear();
+            } else {
+                state.show_toast(
+                    "Committing is unavailable in comparison mode".into(),
+                    Instant::now(),
+                );
+            }
+            needs_draw = true;
+        }
+        if effects.submit_commit
+            && watching
+            && !mutation_busy
+            && size.width >= commit::MIN_WIDTH
+            && size.height >= commit::MIN_HEIGHT
+            && let Some(message) = state.commit_message()
+        {
+            state.commit_started();
+            match commit::Session::start(&root, &message, size.width, size.height) {
+                Ok(session) => {
+                    committing = Some(session);
+                    mutation_busy = true;
+                }
+                Err(error) => {
+                    let error = format!("Cannot run git commit: {error}");
+                    commit::show_failure(&mut terminal, &error)?;
+                    state.commit_finished(Err(error));
+                    collecting.request(state.collection_request())?;
+                }
+            }
+            needs_draw = true;
+        }
         if effects.open_discard && !mutation_busy {
             if !watching {
                 state.show_toast(
@@ -387,7 +436,10 @@ impl ViewAreas {
                 ..Effects::default()
             };
         }
-        if state.prompt().is_some() || state.discard_menu().is_some() {
+        if state.prompt().is_some()
+            || state.discard_menu().is_some()
+            || state.commit_dialog().is_some()
+        {
             return Effects {
                 redraw,
                 ..Effects::default()
@@ -714,6 +766,7 @@ fn draw(
         help::Help::new(area, &config.bindings, &palette).draw(frame, help_scroll, &palette);
     }
     discard::draw(frame, state, config, &palette);
+    commit::draw(frame, state, &palette);
 }
 
 fn draw_toast(frame: &mut Frame, message: &str, body: Rect, palette: &Palette) {

@@ -1,5 +1,6 @@
 mod activity;
 mod collection;
+mod commit;
 mod diff;
 mod discard;
 mod tree;
@@ -7,6 +8,7 @@ mod update;
 
 pub use collection::CollectionRequest;
 use collection::CollectionState;
+pub(crate) use commit::{CommitDialog, CommitField};
 use diff::DiffState;
 pub(crate) use discard::{DISCARD_MODES, DiscardOption};
 use tree::TreeIndex;
@@ -103,6 +105,7 @@ pub struct State {
     /// Whether the help overlay is visible.
     help: bool,
     discard: Option<discard::DiscardMenu>,
+    commit: CommitDialog,
     /// Latest setting notification, removed when its deadline passes.
     toast: Option<Toast>,
     visible_files: usize,
@@ -266,6 +269,7 @@ impl State {
             sidebar: true,
             help: false,
             discard: None,
+            commit: CommitDialog::default(),
             toast: None,
             visible_files: 0,
         }

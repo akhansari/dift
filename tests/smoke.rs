@@ -2,6 +2,8 @@
 
 mod terminal;
 
+#[path = "smoke/commit.rs"]
+mod commit;
 #[path = "smoke/discard.rs"]
 mod discard;
 #[path = "smoke/editor.rs"]
@@ -319,7 +321,6 @@ fn space_stages_and_unstages_root_with_automatic_pane_refresh() -> Result {
     // When
     session.send(" ")?;
     // Then
-    session.wait("Staged changes")?;
     session.wait_for("staged panes", Duration::from_secs(4), |screen| {
         screen.contains("STAGED")
             && !screen.contains("UNSTAGED")
@@ -329,7 +330,6 @@ fn space_stages_and_unstages_root_with_automatic_pane_refresh() -> Result {
     assert!(fixture.git(&["diff"])?.is_empty());
     assert_eq!(fixture.git(&["show", ":notes.txt"])?, "untracked note");
     session.send(" ")?;
-    session.wait("Unstaged changes")?;
     session.wait("UNTRACKED")?;
     session.wait("UNSTAGED")?;
     assert!(fixture.git(&["diff", "--cached"])?.is_empty());
@@ -362,7 +362,7 @@ fn repeated_space_during_a_locked_operation_does_not_queue_toggles() -> Result {
     session.wait("index.lock")?;
     fs::remove_file(fixture.path(".git/index.lock"))?;
     session.send(" ")?;
-    session.wait("Staged changes")?;
+    session.wait("Added · Staged")?;
     assert!(fixture.git(&["diff"])?.is_empty());
     session.quit()
 }
@@ -377,7 +377,7 @@ fn filtered_root_stages_hidden_descendants() -> Result {
     // When
     session.send(" ")?;
     // Then
-    session.wait("Staged changes")?;
+    session.wait("Added · Staged")?;
     assert!(fixture.git(&["diff"])?.is_empty());
     assert_eq!(
         fixture.git(&["show", ":src/main.rs"])?,
@@ -396,7 +396,7 @@ fn diff_focus_stages_only_the_visible_file() -> Result {
     // When
     session.send(" ")?;
     // Then
-    session.wait("Staged changes")?;
+    session.wait("Added · Staged")?;
     assert_eq!(fixture.git(&["show", ":notes.txt"])?, "untracked note");
     assert_eq!(
         fixture.git(&["show", ":src/main.rs"])?,
@@ -414,7 +414,9 @@ fn hidden_whitespace_changes_can_be_staged_from_root() -> Result {
     // When
     session.send(" ")?;
     // Then
-    session.wait("Staged changes")?;
+    // Reveal the whitespace edit to inspect its new category.
+    session.send("w")?;
+    session.wait("Modified · Staged")?;
     assert!(fixture.git(&["diff"])?.is_empty());
     assert_eq!(fixture.git(&["show", ":spacing.txt"])?, "one  two");
     session.quit()
@@ -432,7 +434,7 @@ fn collapsed_directory_stages_every_descendant() -> Result {
     // When
     session.send(" ")?;
     // Then
-    session.wait("Staged changes")?;
+    session.wait("Added · Staged")?;
     assert_eq!(
         fixture.git(&["show", ":src/deep/hidden.txt"])?,
         "hidden descendant"
@@ -469,7 +471,7 @@ fn internal_staging_is_quiet_but_external_edits_highlight() -> Result {
     let background = tree_background(&session.screen, "main.rs").ok_or("Missing tree file")?;
     // When
     session.send(" ")?;
-    session.wait("Staged changes")?;
+    session.wait("Added · Staged")?;
     session.observe(Duration::from_millis(500))?;
     // Then
     assert_eq!(
@@ -481,7 +483,7 @@ fn internal_staging_is_quiet_but_external_edits_highlight() -> Result {
         Some(background)
     );
     session.send(" ")?;
-    session.wait("Unstaged changes")?;
+    session.wait("UNTRACKED")?;
     session.observe(Duration::from_millis(500))?;
     assert_eq!(
         tree_background(&session.screen, "main.rs"),

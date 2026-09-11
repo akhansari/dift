@@ -2,6 +2,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{collections::BTreeMap, fmt};
 use thiserror::Error;
 
+mod multiline;
+pub(crate) use multiline::MultilineEditor;
+
 /// An error parsing or validating keyboard shortcuts.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BindingError {
@@ -76,6 +79,7 @@ pub enum Action {
     Refresh,
     ToggleStage,
     Discard,
+    Commit,
     OpenEditor,
     OpenEditorPlain,
     CursorLeft,
@@ -89,7 +93,7 @@ pub enum Action {
     ClearAfter,
 }
 impl Action {
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::Quit,
         Self::Sidebar,
         Self::Layout,
@@ -120,6 +124,7 @@ impl Action {
         Self::Refresh,
         Self::ToggleStage,
         Self::Discard,
+        Self::Commit,
         Self::OpenEditor,
         Self::OpenEditorPlain,
         Self::CursorLeft,
@@ -164,6 +169,7 @@ impl Action {
             Self::Refresh => "refresh",
             Self::ToggleStage => "toggle-stage",
             Self::Discard => "discard",
+            Self::Commit => "commit",
             Self::OpenEditor => "open-editor",
             Self::OpenEditorPlain => "open-editor-plain",
             Self::CursorLeft => "cursor-left",
@@ -350,6 +356,7 @@ impl Bindings {
             (Action::Refresh, "r"),
             (Action::ToggleStage, "space"),
             (Action::Discard, "D"),
+            (Action::Commit, "c"),
             (Action::OpenEditor, "o"),
             (Action::OpenEditorPlain, "O"),
         ];

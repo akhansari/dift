@@ -224,6 +224,7 @@ fn description(action: Action) -> &'static str {
         Action::Refresh => "Refresh changes",
         Action::ToggleStage => "Stage or unstage changes",
         Action::Discard => "Choose changes to discard",
+        Action::Commit => "Commit staged changes",
         Action::OpenEditor => "Open editor at the visible change",
         Action::OpenEditorPlain => "Open editor without a line position",
         Action::CursorLeft => "Move cursor left",
