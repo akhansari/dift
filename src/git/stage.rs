@@ -28,15 +28,6 @@ pub enum StageOutcome {
     Unstaged,
     Unchanged,
 }
-impl StageOutcome {
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::Staged => "Staged changes",
-            Self::Unstaged => "Unstaged changes",
-            Self::Unchanged => "Nothing to stage or unstage",
-        }
-    }
-}
 
 struct StageOperation {
     outcome: StageOutcome,

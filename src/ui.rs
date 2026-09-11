@@ -119,13 +119,9 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
             match update {
                 collect::Update::MutationFinished(result) => {
                     mutation_busy = false;
-                    state.show_toast(
-                        match result {
-                            Ok(outcome) => outcome.message().into(),
-                            Err(error) => error.to_string(),
-                        },
-                        Instant::now(),
-                    );
+                    if let Err(error) = result {
+                        state.show_toast(error.to_string(), Instant::now());
+                    }
                 }
                 collect::Update::DiscardPrepared(options) => {
                     mutation_busy = false;
