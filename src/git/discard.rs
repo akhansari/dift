@@ -5,7 +5,12 @@ use std::{
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
+
+/// Preview results shared by discard preparation and its interactive menu.
+pub(crate) type DiscardOption = Result<Arc<DiscardPreview>, String>;
+pub(crate) const DISCARD_MODES: [DiscardMode; 2] = [DiscardMode::Unstaged, DiscardMode::All];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscardMode {

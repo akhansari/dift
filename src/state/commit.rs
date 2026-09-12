@@ -1,4 +1,4 @@
-use super::{Effects, State};
+use super::{Command, Effects, State};
 use crate::input::{Action, Bindings, Editor, MultilineEditor, Scope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -94,7 +94,7 @@ impl State {
         if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
             return Effects {
                 redraw: true,
-                submit_commit: key.kind == KeyEventKind::Press,
+                command: (key.kind == KeyEventKind::Press).then_some(Command::SubmitCommit),
                 ..Effects::default()
             };
         }

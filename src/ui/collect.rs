@@ -1,14 +1,14 @@
 mod mutations;
-use mutations::Mutations;
+mod runner;
+use runner::Runner;
 
-use super::watch::{Batch, EventFilter, Refresh, Watches};
 use crate::{
     git::{
-        Collector, DiscardOutcome, DiscardPreview, GitError, Limits, Mode, Repository,
+        DiscardOption, DiscardOutcome, DiscardPreview, GitError, Limits, Mode, Repository,
         StageOutcome, StageTarget,
     },
     model::{ActivityObservations, Snapshot},
-    state::{CollectionRequest, DISCARD_MODES, DiscardOption},
+    state::CollectionRequest,
 };
 use std::{
     collections::BTreeSet,
@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool, mpsc},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub(super) enum Update {
@@ -65,223 +65,12 @@ impl Worker {
         thread::Builder::new()
             .name("git-collect".into())
             .spawn(move || {
-                let watching = matches!(mode, Mode::Watch);
-                // Bootstrap shallow watches without traversing the working tree.
-                let (mut watches, inbox) = Watches::new(&paths, watcher_degraded, watching);
-                let mut collector = None;
-                let mut filter: Option<EventFilter> = None;
-                let mut latest = CollectionRequest::default();
-                let mut refresh = Refresh::new(Instant::now());
-                let mut pending = Batch::default();
-                let mut coverage_refresh = false;
-                let mut internal_mutations = Mutations::default();
+                let mut runner = Runner::new(paths, mode, limits, interval, watcher_degraded, send);
                 #[cfg(test)]
-                let mut initialized_send = Some(initialized_send);
-                loop {
-                    let coverage_changed = std::mem::take(&mut coverage_refresh);
-                    let timeout = if coverage_changed {
-                        Duration::ZERO
-                    } else {
-                        Duration::from_millis(33)
-                    };
-                    let mut mutations = Vec::new();
-                    let mut accept = |request| match request {
-                        Request::Collect(request) => latest = request,
-                        Request::Toggle(target, request) => {
-                            latest = request;
-                            mutations.push(Mutation::Toggle(target));
-                        }
-                        Request::PrepareDiscard(target) => {
-                            let options = DISCARD_MODES.map(|mode| {
-                                if watching {
-                                    paths
-                                        .prepare_discard(&target, mode)
-                                        .map(Arc::new)
-                                        .map_err(|error| error.to_string())
-                                } else {
-                                    Err("Discard is unavailable in comparison mode".into())
-                                }
-                            });
-                            let _ = send.send(Update::DiscardPrepared(options));
-                        }
-                        Request::Discard(preview, request) => {
-                            latest = request;
-                            mutations.push(Mutation::Discard(preview));
-                        }
-                    };
-                    let mut force = match receive.recv_timeout(timeout) {
-                        Ok(request) => {
-                            accept(request);
-                            true
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => false,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    };
-                    force |= coverage_changed;
-                    for request in receive.try_iter() {
-                        accept(request);
-                        force = true;
-                    }
-                    let outcomes: Vec<_> = mutations
-                        .into_iter()
-                        .map(|mutation| {
-                            if watching {
-                                // Observe external edits before the command can change their
-                                // category or incorporate them into the index.
-                                let guard = internal_mutations.before_refresh(&paths);
-                                let head = paths.activity_head().ok();
-                                let before = (|| -> Result<Snapshot, GitError> {
-                                    if collector.is_none() {
-                                        collector = Some(Collector::new(paths.clone())?);
-                                    }
-                                    let Some(collector) = &mut collector else {
-                                        return Err(GitError::InvalidOutput(
-                                            "Missing collector".into(),
-                                        ));
-                                    };
-                                    collector.snapshot_with_whitespace(
-                                        &mode,
-                                        limits,
-                                        &latest.loaded,
-                                        latest.whitespace,
-                                    )
-                                })();
-                                if let Some(update) =
-                                    internal_mutations.finish(&paths, &guard, &before)
-                                {
-                                    let _ = send.send(update);
-                                }
-                                if let Ok(snapshot) = &before {
-                                    if let Some(observations) = &snapshot.activity {
-                                        let _ = send
-                                            .send(Update::ObservedActivity(observations.clone()));
-                                    }
-                                } else {
-                                    // Without the pre-command observation, attribution for
-                                    // overlapping operations is ambiguous.
-                                    internal_mutations.invalidate();
-                                }
-                                let (attribution, update) = match mutation {
-                                    Mutation::Toggle(target) => {
-                                        let report = paths.toggle_stage_tracked(&target);
-                                        (
-                                            report.attribution,
-                                            Update::MutationFinished(report.outcome),
-                                        )
-                                    }
-                                    Mutation::Discard(preview) => {
-                                        let report = paths.discard_tracked(&preview);
-                                        (
-                                            report.attribution,
-                                            Update::DiscardFinished(report.outcome),
-                                        )
-                                    }
-                                };
-                                internal_mutations.record(
-                                    attribution,
-                                    before
-                                        .as_ref()
-                                        .ok()
-                                        .and_then(|snapshot| snapshot.activity.as_ref()),
-                                    head.as_deref(),
-                                );
-                                update
-                            } else {
-                                let error = GitError::Command(
-                                    "Git changes are unavailable in comparison mode".into(),
-                                );
-                                match mutation {
-                                    Mutation::Toggle(_) => Update::MutationFinished(Err(error)),
-                                    Mutation::Discard(_) => Update::DiscardFinished(Err(error)),
-                                }
-                            }
-                        })
-                        .collect();
-                    let dirty = inbox.drain_into(&mut pending);
-                    let now = Instant::now();
-                    let periodic = watching && refresh.periodic_due(now, interval);
-                    refresh.observe(now, dirty, watching, interval);
-                    let ready = refresh.take_request(false);
-                    if !force && !ready {
-                        continue;
-                    }
-                    let batch = std::mem::take(&mut pending);
-                    if batch.is_empty() && !force && !periodic {
-                        continue;
-                    }
-                    let mut reconcile_watches = false;
-                    let before_refresh = internal_mutations.before_refresh(&paths);
-                    let result = (|| -> Result<Option<Snapshot>, GitError> {
-                        if collector.is_none() {
-                            collector = Some(Collector::new(paths.clone())?);
-                        }
-                        let Some(collector) = &mut collector else {
-                            return Ok(None);
-                        };
-                        let full = force
-                            || periodic
-                            || filter
-                                .as_ref()
-                                .is_none_or(|filter| filter.invalidates_configuration(&batch));
-                        if !full
-                            && filter
-                                .as_mut()
-                                .is_some_and(|filter| !filter.should_collect(&batch, collector))
-                        {
-                            return Ok(None);
-                        }
-                        let _ = send.send(Update::Started(latest.generation));
-                        if full {
-                            collector.refresh_configuration(true)?;
-                        }
-                        let snapshot = collector.snapshot_with_whitespace(
-                            &mode,
-                            limits,
-                            &latest.loaded,
-                            latest.whitespace,
-                        )?;
-                        let context = collector.watch_context()?;
-                        reconcile_watches = watching && (full || batch.changes_directories());
-                        filter = Some(EventFilter::new(context));
-                        Ok(Some(snapshot))
-                    })();
-                    let result = match result {
-                        Ok(None) => continue, // Ignored events don't change the reconciliation clock or UI.
-                        Ok(Some(snapshot)) => Ok(snapshot),
-                        Err(error) => {
-                            filter = None;
-                            Err(error)
-                        }
-                    };
-                    if let Some(update) =
-                        internal_mutations.finish(&paths, &before_refresh, &result)
-                    {
-                        let _ = send.send(update);
-                    }
-                    refresh.completed(Instant::now());
-                    if send
-                        .send(Update::Finished(latest.generation, result))
-                        .is_err()
-                    {
-                        break;
-                    }
-                    for outcome in outcomes {
-                        let _ = send.send(outcome);
-                    }
-                    if reconcile_watches
-                        && let (Some(filter), Some(collector)) = (&mut filter, &collector)
-                    {
-                        // Publish first, then catch edits made before their directories
-                        // were watched, even if those edits generated no event.
-                        coverage_refresh = watches.reconcile(filter, collector, &batch, periodic);
-                    }
-                    // Let integration fixtures observe the end of startup without
-                    // sleeps or a manual refresh that could mask missing watches.
-                    #[cfg(test)]
-                    if !coverage_refresh && let Some(ready) = initialized_send.take() {
-                        let _ = ready.send(());
-                    }
+                {
+                    runner.initialized = Some(initialized_send);
                 }
+                runner.run(receive);
             })?;
         Ok(Self {
             requests,
@@ -325,6 +114,7 @@ impl Worker {
 mod tests {
     use super::*;
     use crate::{AppResult, ui::fixtures::Fixture};
+    use std::time::Instant;
 
     fn next_snapshot(worker: &Worker) -> AppResult<Snapshot> {
         loop {

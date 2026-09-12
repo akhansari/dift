@@ -329,35 +329,37 @@ mod tests {
     }
 
     #[test]
-    fn raw_records_without_numstat_are_filtered() {
+    fn raw_records_without_numstat_are_filtered() -> Result<(), GitError> {
         // Given
         let output = b":100644 100644 aaaa bbbb M\0hidden\0\0";
         // When
-        let (records, stats) = parse_raw_patch(output).unwrap();
+        let (records, stats) = parse_raw_patch(output)?;
         // Then
         assert!(records.is_empty());
         assert_eq!(stats, LineStats::default());
+        Ok(())
     }
 
     #[test]
-    fn empty_output_has_no_records() {
+    fn empty_output_has_no_records() -> Result<(), GitError> {
         // Given
         let output = b"";
         // When
-        let (records, stats) = parse_raw_patch(output).unwrap();
+        let (records, stats) = parse_raw_patch(output)?;
         // Then
         assert!(records.is_empty());
         assert_eq!(stats, LineStats::default());
+        Ok(())
     }
 
     #[test]
-    fn numstat_records_select_visible_raw_records() {
+    fn numstat_records_select_visible_raw_records() -> Result<(), GitError> {
         // Given
         let output = b":100644 100644 aaaa bbbb M\0hidden\0\
             :100644 100644 cccc dddd M\0visible\0\
             2\t1\tvisible\0\0diff --git a/visible b/visible\n";
         // When
-        let (records, stats) = parse_raw_patch(output).unwrap();
+        let (records, stats) = parse_raw_patch(output)?;
         // Then
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].path, PathBuf::from("visible"));
@@ -369,6 +371,7 @@ mod tests {
                 removed: 1
             }
         );
+        Ok(())
     }
 
     #[test]

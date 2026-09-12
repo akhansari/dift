@@ -1,3 +1,5 @@
+mod navigation;
+
 use crate::model::{Category, Snapshot, display_path};
 use nucleo_matcher::{
     Matcher, Utf32Str,

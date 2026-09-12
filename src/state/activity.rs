@@ -1,3 +1,4 @@
+use super::{Effects, State};
 use crate::model::ActivityObservations;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,6 +10,37 @@ const ATTACK: Duration = Duration::from_millis(150);
 const LIFETIME: Duration = Duration::from_secs(32);
 const HOLD_UNTIL: Duration = LIFETIME.saturating_sub(Duration::from_secs(2));
 const DISMISS: Duration = Duration::from_millis(200);
+
+impl State {
+    /// Activity changes only the tree's appearance, never the rendered diff.
+    pub fn advance_activity(&mut self, now: Instant) -> Effects {
+        Effects {
+            redraw: self.activity.advance(now),
+            ..Effects::default()
+        }
+    }
+
+    pub fn activity_intensity(&self, path: &Path, directory: bool) -> f32 {
+        self.activity
+            .intensity(path, directory, self.matching_paths())
+    }
+
+    pub(crate) fn highlight_activity(&mut self, paths: &BTreeSet<PathBuf>, now: Instant) {
+        self.activity.highlight(paths, now);
+    }
+
+    pub(crate) fn observe_activity(&mut self, observations: ActivityObservations, now: Instant) {
+        self.activity.observe(Some(observations), now);
+    }
+
+    pub(crate) fn internal_activity(
+        &mut self,
+        paths: &BTreeSet<PathBuf>,
+        observations: ActivityObservations,
+    ) {
+        self.activity.rebase(paths, observations);
+    }
+}
 
 struct Pulse {
     started: Instant,

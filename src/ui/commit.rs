@@ -300,12 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn git_failure_remains_a_git_result_after_cleanup() {
+    fn git_failure_remains_a_git_result_after_cleanup() -> Result<(), TerminalError> {
         // Given
         let git_result = Ok(Err::<(), _>("Hook rejected the commit".to_owned()));
         // When
         let result = finish_handoff(git_result, Ok(()));
         // Then
-        assert_eq!(result.unwrap(), Err("Hook rejected the commit".to_owned()));
+        assert_eq!(result?, Err("Hook rejected the commit".to_owned()));
+        Ok(())
     }
 }

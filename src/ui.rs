@@ -1,6 +1,7 @@
 mod activity;
 mod clipboard;
 mod collect;
+mod commands;
 mod commit;
 mod discard;
 mod editor;
@@ -40,6 +41,7 @@ use ratatui::{
 };
 use std::{
     io::{self, IsTerminal},
+    ops::ControlFlow,
     sync::{atomic::Ordering, mpsc},
     time::{Duration, Instant},
 };
@@ -113,8 +115,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let mut state = State::with_whitespace(config.split, config.whitespace);
     state.set_comparison(!watching);
-    let mut mutation_busy = false;
-    let mut committing: Option<commit::Session> = None;
+    let mut commands = commands::Commands::new(root, watching);
     let mut interaction = Interaction::default();
     let mut render_needed = true;
     let mut needs_draw = true;
@@ -126,68 +127,14 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         degraded.load(Ordering::Relaxed),
     ));
     loop {
-        if let Some(session) = &mut committing
-            && let Some(result) = session.update(&mut terminal)?
-        {
-            committing = None;
-            mutation_busy = false;
-            state.commit_finished(result);
-            collecting.request(state.collection_request())?;
-            needs_draw = true;
-        }
+        needs_draw |= commands.update_commit(&mut terminal, &mut state, &collecting)?;
         while let Some(update) = worker_update(collecting.updates.try_recv(), "Git collection")? {
-            needs_draw = true;
-            match update {
-                collect::Update::MutationFinished(result) => {
-                    mutation_busy = false;
-                    if let Err(error) = result {
-                        state.show_toast(error.to_string(), Instant::now());
-                    }
-                }
-                collect::Update::DiscardPrepared(options) => {
-                    mutation_busy = false;
-                    state.discard_prepared(options);
-                }
-                collect::Update::DiscardFinished(result) => {
-                    mutation_busy = false;
-                    if matches!(result, Ok(crate::git::DiscardOutcome::Stale)) {
-                        if let Some(target) = state.discard_stale() {
-                            collecting.prepare_discard(target)?;
-                            mutation_busy = true;
-                        }
-                    } else {
-                        state.close_discard();
-                        state.show_toast(
-                            match result {
-                                Ok(crate::git::DiscardOutcome::Discarded) => {
-                                    "Discarded changes".into()
-                                }
-                                Ok(_) => "Nothing to discard".into(),
-                                Err(error) => error.to_string(),
-                            },
-                            Instant::now(),
-                        );
-                    }
-                }
-                collect::Update::ObservedActivity(observations) => {
-                    state.observe_activity(observations, Instant::now());
-                }
-                collect::Update::InternalActivity(paths, observations, external) => {
-                    state.internal_activity(&paths, observations);
-                    state.highlight_activity(&external, Instant::now());
-                }
-                collect::Update::Started(generation) => state.collection_started(generation),
-                collect::Update::Finished(generation, result) => {
-                    render_needed |= state
-                        .collection_finished(generation, result, Instant::now())
-                        .render;
-                }
-            }
+            let effects = commands.update(update, &mut state, &collecting)?;
+            needs_draw |= effects.redraw;
+            render_needed |= effects.render;
         }
         let size = terminal.size()?;
-        if let Some(session) = &mut committing {
-            session.resize(size.width, size.height)?;
-        }
+        commands.resize(size)?;
         let view = ViewAreas::new(Rect::new(0, 0, size.width, size.height), state.sidebar());
         if state.help() {
             help::Help::new(view.area, &config.bindings, &Palette::new(config.light))
@@ -269,108 +216,23 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         if let Some(text) = interaction.selection.take_copy() {
             clipboard::copy(&mut io::stdout().lock(), &text)?;
         }
-        if effects.quit {
-            break;
-        }
         needs_draw |= effects.redraw;
         render_needed |= effects.render;
-        if effects.open_commit && !mutation_busy {
-            if watching {
-                state.begin_commit();
-                interaction.selection.clear();
-            } else {
-                state.show_toast(
-                    "Committing is unavailable in comparison mode".into(),
-                    Instant::now(),
-                );
+        if let Some(command) = effects.command {
+            match commands.dispatch(
+                command,
+                commands::Context {
+                    terminal: &mut terminal,
+                    state: &mut state,
+                    collecting: &collecting,
+                    interaction: &mut interaction,
+                    size,
+                    height: viewport.1,
+                },
+            )? {
+                ControlFlow::Break(()) => break,
+                ControlFlow::Continue(redraw) => needs_draw |= redraw,
             }
-            needs_draw = true;
-        }
-        if effects.submit_commit
-            && watching
-            && !mutation_busy
-            && size.width >= commit::MIN_WIDTH
-            && size.height >= commit::MIN_HEIGHT
-            && let Some(message) = state.commit_message()
-        {
-            state.commit_started();
-            match commit::Session::start(&root, &message, size.width, size.height) {
-                Ok(session) => {
-                    committing = Some(session);
-                    mutation_busy = true;
-                }
-                Err(error) => {
-                    let error = format!("Cannot run git commit: {error}");
-                    commit::show_failure(&mut terminal, &error)?;
-                    state.commit_finished(Err(error));
-                    collecting.request(state.collection_request())?;
-                }
-            }
-            needs_draw = true;
-        }
-        if effects.open_discard && !mutation_busy {
-            if !watching {
-                state.show_toast(
-                    "Discard is unavailable in comparison mode".into(),
-                    Instant::now(),
-                );
-            } else if let Some(target) = state.change_target(viewport.1) {
-                collecting.prepare_discard(target.clone())?;
-                state.begin_discard(target);
-                interaction.selection.clear();
-                mutation_busy = true;
-            } else {
-                state.show_toast("Nothing to discard".into(), Instant::now());
-            }
-            needs_draw = true;
-        }
-        if effects.confirm_discard
-            && !mutation_busy
-            && size.width >= 40
-            && size.height >= 12
-            && let Some(preview) = state.take_discard_preview()
-        {
-            collecting.discard(preview, state.collection_request())?;
-            mutation_busy = true;
-        }
-        if effects.toggle_stage && !mutation_busy {
-            if !watching {
-                state.show_toast(
-                    "Staging is unavailable in comparison mode".into(),
-                    Instant::now(),
-                );
-            } else if let Some(target) = state.stage_target(viewport.1) {
-                collecting.toggle(target, state.collection_request())?;
-                mutation_busy = true;
-            } else {
-                state.show_toast("Nothing to stage or unstage".into(), Instant::now());
-            }
-            needs_draw = true;
-        }
-        if let Some(position) = effects.open_editor {
-            let result = match editor::EditorCommand::prepare(
-                &root,
-                state.editor_target(viewport.1, position),
-                std::env::var_os("VISUAL"),
-                std::env::var_os("EDITOR"),
-            ) {
-                Ok(command) => {
-                    interaction.selection.clear();
-                    let result = command.open(&mut terminal)?;
-                    if watching {
-                        collecting.request(state.collection_request())?;
-                    }
-                    result
-                }
-                Err(error) => Err(error),
-            };
-            if let Err(error) = result {
-                state.show_toast(error.to_string(), Instant::now());
-            }
-            needs_draw = true;
-        }
-        if effects.collect {
-            collecting.request(state.collection_request())?;
         }
     }
     Ok(())

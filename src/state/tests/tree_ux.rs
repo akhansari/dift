@@ -138,7 +138,7 @@ fn cancelling_an_edit_restores_the_previous_filtered_collapse_state() {
     let now = Instant::now();
     state.action(Action::Filter, 10, now);
     state.action(Action::ClearBefore, 10, now);
-    state.apply_pending_filter(now + FILTER_DEBOUNCE);
+    state.apply_pending_filter(now + Duration::from_millis(300));
     // When
     state.action(Action::Cancel, 10, Instant::now());
     // Then

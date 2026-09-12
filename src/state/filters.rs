@@ -79,6 +79,30 @@ pub(crate) struct FilterMenu {
 }
 
 impl State {
+    pub(super) fn refilter(&mut self) {
+        let active = !self.filter.is_empty() || self.change_filter.restricted();
+        if !active {
+            if let Some(collapsed) = self.unfiltered_collapsed.take() {
+                self.collapsed = collapsed;
+            }
+        } else if self.unfiltered_collapsed.is_none() {
+            self.unfiltered_collapsed = Some(self.collapsed.clone());
+        }
+        self.tree
+            .filter_changes(&self.snapshot, &self.change_filter);
+        self.tree.refilter(&self.filter, &self.collapsed);
+        if active {
+            let mut revealed = false;
+            for row in self.tree.rows(true).iter().filter(|row| row.directory) {
+                revealed |= self.collapsed.remove(&row.path);
+            }
+            if revealed {
+                self.tree.reveal(&self.collapsed);
+            }
+        }
+        self.reconcile_selection();
+    }
+
     pub(crate) fn set_comparison(&mut self, comparison: bool) {
         self.comparison = comparison;
     }

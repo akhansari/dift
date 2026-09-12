@@ -17,6 +17,7 @@ mod source;
 mod stage;
 pub use collector::Collector;
 pub(crate) use collector::WatchContext;
+pub(crate) use discard::{DISCARD_MODES, DiscardOption};
 pub use discard::{DiscardMode, DiscardOutcome, DiscardPreview};
 pub(crate) use mutation::{IndexMutation, MutationAttribution};
 pub use patch::parse_patch;

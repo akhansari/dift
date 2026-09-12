@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::{EditorPosition, EditorTarget};
+use crate::state::{Command, EditorPosition, EditorTarget};
 use std::path::Path;
 
 #[test]
@@ -14,7 +14,10 @@ fn uppercase_o_requests_a_normal_editor_open() {
         Instant::now(),
     );
     // Then
-    assert_eq!(effects.open_editor, Some(EditorPosition::Default));
+    assert_eq!(
+        effects.command,
+        Some(Command::OpenEditor(EditorPosition::Default))
+    );
 }
 
 #[test]
@@ -205,8 +208,10 @@ fn the_default_editor_shortcut_requests_a_launch() -> AppResult<()> {
     );
     // Then
     assert_eq!(
-        effects.open_editor,
-        Some(crate::state::EditorPosition::VisibleHunk)
+        effects.command,
+        Some(Command::OpenEditor(
+            crate::state::EditorPosition::VisibleHunk
+        ))
     );
     Ok(())
 }
@@ -225,8 +230,10 @@ fn the_editor_shortcut_can_be_rebound() -> AppResult<()> {
     );
     // Then
     assert_eq!(
-        effects.open_editor,
-        Some(crate::state::EditorPosition::VisibleHunk)
+        effects.command,
+        Some(Command::OpenEditor(
+            crate::state::EditorPosition::VisibleHunk
+        ))
     );
     Ok(())
 }
@@ -244,7 +251,7 @@ fn the_editor_shortcut_inserts_text_in_a_search_prompt() {
         Instant::now(),
     );
     // Then
-    assert_eq!(effects.open_editor, None);
+    assert_eq!(effects.command, None);
     assert_eq!(state.search(), "o");
 }
 
@@ -261,7 +268,7 @@ fn help_suppresses_editor_launches() {
         Instant::now(),
     );
     // Then
-    assert_eq!(effects.open_editor, None);
+    assert_eq!(effects.command, None);
     assert!(state.help());
 }
 
@@ -304,7 +311,7 @@ fn space_in_a_prompt_is_text() {
         Instant::now(),
     );
     // Then
-    assert!(!effects.toggle_stage);
+    assert_eq!(effects.command, None);
     assert_eq!(
         state.prompt().map(|prompt| prompt.editor().text()),
         Some(" ")
@@ -324,6 +331,6 @@ fn help_ignores_space() {
         Instant::now(),
     );
     // Then
-    assert!(!effects.toggle_stage);
+    assert_eq!(effects.command, None);
     assert!(state.help());
 }

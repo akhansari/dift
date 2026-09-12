@@ -1,11 +1,9 @@
-use super::{Effects, State};
+use super::{Command, Effects, State};
 use crate::{
-    git::{ChangeTarget, DiscardMode, DiscardPreview},
+    git::{ChangeTarget, DiscardOption, DiscardPreview},
     input::Action,
 };
 use std::sync::Arc;
-
-pub(crate) type DiscardOption = Result<Arc<DiscardPreview>, String>;
 
 pub(crate) struct DiscardMenu {
     pub target: ChangeTarget,
@@ -93,7 +91,9 @@ impl State {
         match action {
             Action::Cancel => self.discard = None,
             Action::Accept if menu.selected == 2 => self.discard = None,
-            Action::Accept if menu.preview().is_some() => effects.confirm_discard = true,
+            Action::Accept if menu.preview().is_some() => {
+                effects.command = Some(Command::ConfirmDiscard)
+            }
             Action::Up if menu.options.is_some() => menu.selected = (menu.selected + 2) % 3,
             Action::Down if menu.options.is_some() => menu.selected = (menu.selected + 1) % 3,
             Action::PageDown => menu.scroll = menu.scroll.saturating_add(4),
@@ -103,5 +103,3 @@ impl State {
         effects
     }
 }
-
-pub(crate) const DISCARD_MODES: [DiscardMode; 2] = [DiscardMode::Unstaged, DiscardMode::All];

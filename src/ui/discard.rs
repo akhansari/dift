@@ -1,9 +1,10 @@
 use crate::{
     config::Config,
     git::ChangeTarget,
+    git::DISCARD_MODES,
     input::{Action, Scope},
     render::Palette,
-    state::{DISCARD_MODES, State},
+    state::State,
 };
 use ratatui::{
     Frame,

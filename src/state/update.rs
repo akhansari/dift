@@ -1,152 +1,14 @@
-use super::{PromptKind, State, TOAST_DURATION, Toast};
+use super::{Command, EditorPosition, Effects, PromptKind, State};
 use crate::{
     git::GitError,
     input::{Action, Bindings, Scope},
-    model::{ActivityObservations, Snapshot},
+    model::Snapshot,
     render::worker::{RenderRequest, RenderResult},
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::{
-    collections::BTreeSet,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-/// Whether an external editor should receive a position from the displayed diff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditorPosition {
-    VisibleHunk,
-    Default,
-}
-
-/// Work the terminal loop must perform after an interactive transition.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Effects {
-    pub redraw: bool,
-    pub render: bool,
-    pub collect: bool,
-    pub toggle_stage: bool,
-    pub open_discard: bool,
-    pub confirm_discard: bool,
-    pub open_commit: bool,
-    pub submit_commit: bool,
-    pub quit: bool,
-    pub open_editor: Option<EditorPosition>,
-}
-impl Effects {
-    pub(super) fn draw(render: bool) -> Self {
-        Self {
-            redraw: true,
-            render,
-            ..Self::default()
-        }
-    }
-}
+use std::{sync::Arc, time::Instant};
 
 impl State {
-    /// Select a visible tree row without resetting an already selected diff.
-    pub(crate) fn select_tree_row(&mut self, index: usize, now: Instant) -> Effects {
-        let Some(row) = self.tree.rows(false).get(index) else {
-            return Effects::default();
-        };
-        let changed = self.selection != row.path;
-        if changed {
-            self.selection.clone_from(&row.path);
-            self.diff.scroll = 0;
-        }
-        if !row.directory {
-            self.activity.visit(&self.selection, now);
-        }
-        self.focus = Scope::Tree;
-        Effects::draw(changed)
-    }
-
-    /// Toggle a visible directory, retaining selection unless it becomes hidden.
-    pub(crate) fn toggle_tree_directory(&mut self, index: usize) -> Effects {
-        let Some(row) = self.tree.rows(false).get(index).filter(|row| row.directory) else {
-            return Effects::default();
-        };
-        if !self.collapsed.remove(&row.path) {
-            self.collapsed.insert(row.path.clone());
-        }
-        self.tree.reveal(&self.collapsed);
-        let hidden = !self
-            .tree
-            .rows(false)
-            .iter()
-            .any(|row| row.path == self.selection);
-        self.reconcile_selection();
-        self.focus = Scope::Tree;
-        Effects::draw(hidden)
-    }
-
-    pub(crate) fn show_toast(&mut self, message: String, now: Instant) {
-        self.toast = Some(Toast {
-            message,
-            expires_at: now + TOAST_DURATION,
-        });
-    }
-
-    pub fn toast_delay(&self, now: Instant) -> Option<Duration> {
-        self.toast
-            .as_ref()
-            .map(|toast| toast.expires_at.saturating_duration_since(now))
-    }
-
-    /// Clear an expired notification without recollecting or rendering the diff.
-    pub fn expire_toast(&mut self, now: Instant) -> Effects {
-        if self
-            .toast
-            .as_ref()
-            .is_some_and(|toast| now >= toast.expires_at)
-        {
-            self.toast = None;
-            Effects::draw(false)
-        } else {
-            Effects::default()
-        }
-    }
-
-    /// Time until a pending filter edit should be applied.
-    pub fn filter_delay(&self, now: Instant) -> Option<Duration> {
-        self.prompt
-            .as_ref()
-            .and_then(|prompt| prompt.filter_deadline)
-            .map(|deadline| deadline.saturating_duration_since(now))
-    }
-
-    /// Apply the latest filter edit once its debounce delay has elapsed.
-    pub fn apply_pending_filter(&mut self, now: Instant) -> Effects {
-        let Some(prompt) = &mut self.prompt else {
-            return Effects::default();
-        };
-        if !prompt
-            .filter_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
-            return Effects::default();
-        }
-        prompt.filter_deadline = None;
-        Effects::draw(self.apply_prompt())
-    }
-
-    pub(crate) fn highlight_activity(&mut self, paths: &BTreeSet<PathBuf>, now: Instant) {
-        self.activity.highlight(paths, now);
-    }
-
-    pub(crate) fn observe_activity(&mut self, observations: ActivityObservations, now: Instant) {
-        self.activity.observe(Some(observations), now);
-    }
-
-    pub(crate) fn internal_activity(
-        &mut self,
-        paths: &BTreeSet<PathBuf>,
-        observations: ActivityObservations,
-    ) {
-        self.activity.rebase(paths, observations);
-    }
-
     pub fn collection_started(&mut self, generation: u64) {
         self.collection.started(generation);
     }
@@ -270,7 +132,7 @@ impl State {
         }
         if action == Action::Quit {
             return Effects {
-                quit: true,
+                command: Some(Command::Quit),
                 ..Effects::default()
             };
         }
@@ -326,7 +188,7 @@ impl State {
             }
             Action::Whitespace => {
                 self.collection.toggle_whitespace();
-                effects.collect = true;
+                effects.command = Some(Command::Collect);
             }
             Action::Focus if self.sidebar => {
                 self.focus = if self.focus == Scope::Tree {
@@ -397,17 +259,21 @@ impl State {
                     .any(|c| c.path == self.selection && c.oversized)
                 {
                     self.collection.loaded.insert(self.selection.clone());
-                    effects.collect = true;
+                    effects.command = Some(Command::Collect);
                 } else {
                     self.expand();
                 }
             }
-            Action::ToggleStage => effects.toggle_stage = true,
-            Action::Discard => effects.open_discard = true,
-            Action::Commit => effects.open_commit = true,
-            Action::Refresh => effects.collect = true,
-            Action::OpenEditor => effects.open_editor = Some(EditorPosition::VisibleHunk),
-            Action::OpenEditorPlain => effects.open_editor = Some(EditorPosition::Default),
+            Action::ToggleStage => effects.command = Some(Command::ToggleStage),
+            Action::Discard => effects.command = Some(Command::OpenDiscard),
+            Action::Commit => effects.command = Some(Command::OpenCommit),
+            Action::Refresh => effects.command = Some(Command::Collect),
+            Action::OpenEditor => {
+                effects.command = Some(Command::OpenEditor(EditorPosition::VisibleHunk))
+            }
+            Action::OpenEditorPlain => {
+                effects.command = Some(Command::OpenEditor(EditorPosition::Default))
+            }
             Action::Help => {
                 self.help = true;
                 self.help_scroll = 0;

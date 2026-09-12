@@ -1,8 +1,10 @@
 use super::*;
-use crate::{AppResult, input::Bindings, ui::fixtures::Fixture};
 use crate::{
-    git::{ChangeTarget, DiscardMode},
-    state::DISCARD_MODES,
+    AppResult,
+    git::{ChangeTarget, DISCARD_MODES, DiscardMode},
+    input::Bindings,
+    state::Command,
+    ui::fixtures::Fixture,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::sync::Arc;
@@ -30,7 +32,7 @@ fn accepting_default_requests_unstaged_discard() -> AppResult<()> {
     // When
     let effects = state.action(Action::Accept, 20, Instant::now());
     // Then
-    assert!(effects.confirm_discard);
+    assert_eq!(effects.command, Some(Command::ConfirmDiscard));
     assert_eq!(
         state
             .take_discard_preview()
@@ -49,7 +51,7 @@ fn accepting_all_requests_the_reviewed_mode() -> AppResult<()> {
     // When
     let effects = state.action(Action::Accept, 20, Instant::now());
     // Then
-    assert!(effects.confirm_discard);
+    assert_eq!(effects.command, Some(Command::ConfirmDiscard));
     assert_eq!(
         state
             .take_discard_preview()
@@ -96,7 +98,7 @@ fn opening_with_no_available_discard_defaults_to_cancel() {
     // When
     let effects = state.action(Action::Accept, 20, Instant::now());
     // Then
-    assert!(!effects.confirm_discard);
+    assert_eq!(effects.command, None);
     assert!(state.discard_menu().is_none());
 }
 
@@ -110,7 +112,7 @@ fn repeated_accept_cannot_execute_discard() -> AppResult<()> {
     // When
     let effects = state.handle_key(key, &Bindings::defaults(), 20, Instant::now());
     // Then
-    assert!(!effects.confirm_discard);
+    assert_eq!(effects.command, None);
     assert!(state.discard_menu().is_some());
     Ok(())
 }
@@ -122,7 +124,7 @@ fn modal_suppresses_underlying_stage_action() -> AppResult<()> {
     // When
     let effects = state.action(Action::ToggleStage, 20, Instant::now());
     // Then
-    assert!(!effects.toggle_stage);
+    assert_eq!(effects.command, None);
     assert!(state.discard_menu().is_some());
     Ok(())
 }
@@ -141,7 +143,7 @@ fn escape_cancels_while_preview_is_preparing() {
     );
     // Then
     assert!(state.discard_menu().is_none());
-    assert!(!effects.confirm_discard);
+    assert_eq!(effects.command, None);
 }
 
 #[test]
@@ -154,7 +156,7 @@ fn unavailable_option_cannot_execute() {
     // When
     let effects = state.action(Action::Accept, 20, Instant::now());
     // Then
-    assert!(!effects.confirm_discard);
+    assert_eq!(effects.command, None);
     assert!(state.discard_menu().is_some());
 }
 
@@ -168,7 +170,7 @@ fn stale_preview_resets_confirmation_to_cancel() -> AppResult<()> {
     let effects = state.action(Action::Accept, 20, Instant::now());
     // Then
     assert_eq!(target, Some(ChangeTarget::File("tracked.txt".into())));
-    assert!(!effects.confirm_discard);
+    assert_eq!(effects.command, None);
     assert!(state.discard_menu().is_none());
     Ok(())
 }

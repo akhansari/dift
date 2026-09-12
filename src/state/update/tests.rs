@@ -72,7 +72,7 @@ fn whitespace_toggle_requests_ignore_changes_from_the_exact_default() {
         Instant::now(),
     );
     // Then
-    assert!(effects.collect);
+    assert_eq!(effects.command, Some(Command::Collect));
     assert!(!effects.render);
     assert_eq!(state.requested_whitespace(), Whitespace::IgnoreChanges);
     assert_eq!(state.snapshot().whitespace, Whitespace::Exact);
@@ -113,7 +113,7 @@ fn w_is_text_when_a_search_prompt_is_open() {
         Instant::now(),
     );
     // Then
-    assert!(!effects.collect);
+    assert_eq!(effects.command, None);
     assert_eq!(state.search(), "w");
     assert_eq!(state.requested_whitespace(), Whitespace::Exact);
 }
@@ -499,7 +499,7 @@ fn manual_refresh_requests_collection_without_replacing_the_document() {
     // When
     let effects = state.action(Action::Refresh, 10, Instant::now());
     // Then
-    assert!(effects.collect);
+    assert_eq!(effects.command, Some(Command::Collect));
     assert!(!effects.render);
     assert_eq!(state.document().rows.len(), 3);
 }
@@ -534,7 +534,7 @@ fn a_successful_retry_after_a_failed_collection_publishes_the_snapshot() {
     );
     assert_eq!(state.error(), Some("Cannot read repository"));
     let effects = state.action(Action::Refresh, 10, Instant::now());
-    assert!(effects.collect);
+    assert_eq!(effects.command, Some(Command::Collect));
     let retry = state.collection_request();
     assert!(state.collecting());
     // When
@@ -577,7 +577,7 @@ fn line_number_shortcut_hides_numbers_from_tree_focus() {
     // Then
     assert!(!state.render_request(80, 20).show_line_numbers);
     assert!(effects.render);
-    assert!(!effects.collect);
+    assert_eq!(effects.command, None);
 }
 
 #[test]

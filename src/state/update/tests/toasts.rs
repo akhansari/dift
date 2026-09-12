@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 fn apply_whitespace_toggle(state: &mut State, now: Instant) {
     state.action(Action::Whitespace, 10, now);

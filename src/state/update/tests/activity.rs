@@ -1,6 +1,6 @@
 use super::*;
 use crate::model::{ActivityObservation, GitIdentity, WorktreeMetadata};
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 fn observed(files: &[(&str, &str)]) -> Snapshot {
     Snapshot {
@@ -106,7 +106,7 @@ fn activity_fades_out_without_recollecting_or_rendering_the_diff() {
     assert_eq!(intensity(&state), 0.5);
     assert!(effects.redraw);
     assert!(!effects.render);
-    assert!(!effects.collect);
+    assert_eq!(effects.command, None);
 }
 
 #[test]

@@ -272,7 +272,8 @@ fn revealed_hook_failure_waits_for_enter_and_restores_terminal_modes() -> Result
     assert!(!session.screen.alternate_screen());
     session.send("\r")?;
     session.wait(" Commit ")?;
-    assert!(session.screen.contains("Failed interactive draft"));
+    session.wait("Failed interactive draft")?;
+    assert!(session.screen.alternate_screen());
     close_dialog(&mut session)?;
     session.quit()
 }

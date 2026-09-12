@@ -1,82 +1,38 @@
 mod activity;
 mod collection;
+mod command;
 mod commit;
 mod diff;
 mod discard;
 mod filters;
+mod prompt;
+mod toast;
 pub(crate) use filters::STATUSES;
 mod tree;
 mod update;
 
 pub use collection::CollectionRequest;
 use collection::CollectionState;
+pub use command::{Command, EditorPosition, Effects};
 pub(crate) use commit::{CommitDialog, CommitField};
 use diff::DiffState;
-pub(crate) use discard::{DISCARD_MODES, DiscardOption};
+pub use prompt::{Prompt, PromptKind};
+use toast::Toast;
 use tree::TreeIndex;
 pub use tree::{TreeBadge, TreeRow};
-pub use update::{EditorPosition, Effects};
 
-use crate::{
-    config::Whitespace,
-    input::{Action, Editor, Scope},
-    model::Snapshot,
-    render::Document,
-};
+use crate::{config::Whitespace, input::Scope, model::Snapshot, render::Document};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
 };
-
-const FILTER_DEBOUNCE: Duration = Duration::from_millis(300);
-const TOAST_DURATION: Duration = Duration::from_secs(3);
-
-struct Toast {
-    message: String,
-    expires_at: Instant,
-}
 
 /// A working-tree file and an optional one-based editor destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditorTarget<'a> {
     pub path: &'a Path,
     pub line: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptKind {
-    Filter,
-    Find,
-    Search,
-}
-/// An active prompt and the values restored when it is cancelled.
-#[derive(Debug, Clone)]
-pub struct Prompt {
-    /// Whether the prompt filters files, finds a file, or searches the diff.
-    kind: PromptKind,
-    /// Text and cursor being edited.
-    editor: Editor,
-    /// Filter or search text from before the prompt opened.
-    previous: String,
-    /// Selected path from before the prompt opened.
-    previous_selection: PathBuf,
-    previous_collapsed: BTreeSet<PathBuf>,
-    previous_unfiltered_collapsed: Option<BTreeSet<PathBuf>>,
-    /// When the latest filter edit should be applied.
-    filter_deadline: Option<Instant>,
-    find_matches: Vec<PathBuf>,
-    find_index: usize,
-}
-
-impl Prompt {
-    pub fn kind(&self) -> PromptKind {
-        self.kind
-    }
-    pub fn editor(&self) -> &Editor {
-        &self.editor
-    }
 }
 
 /// Repository data and interactive state for the terminal UI.
@@ -202,9 +158,6 @@ impl State {
     pub fn error(&self) -> Option<&str> {
         self.collection.error.as_deref()
     }
-    pub fn toast(&self) -> Option<&str> {
-        self.toast.as_ref().map(|toast| toast.message.as_str())
-    }
     pub fn help_scroll(&self) -> usize {
         self.help_scroll
     }
@@ -295,32 +248,8 @@ impl State {
         self.tree
             .filter_changes(&self.snapshot, &self.change_filter);
         self.tree.refilter(&self.filter, &self.collapsed);
-        if let Some(prompt) = &mut self.prompt
-            && prompt.kind == PromptKind::Find
-            && !prompt.editor.text().is_empty()
-        {
-            prompt.find_matches = self.tree.find_files(prompt.editor.text());
-            prompt.find_index = prompt
-                .find_matches
-                .iter()
-                .position(|path| *path == self.selection)
-                .unwrap_or(0);
-            self.select_find_match();
-        }
+        self.refresh_find_matches();
         self.reconcile_selection();
-    }
-
-    /// Activity changes only the tree's appearance, never the rendered diff.
-    pub fn advance_activity(&mut self, now: Instant) -> Effects {
-        Effects {
-            redraw: self.activity.advance(now),
-            ..Effects::default()
-        }
-    }
-
-    pub fn activity_intensity(&self, path: &Path, directory: bool) -> f32 {
-        self.activity
-            .intensity(path, directory, self.matching_paths())
     }
 
     pub fn visible_files(&self) -> usize {
@@ -335,47 +264,6 @@ impl State {
         self.collection.request()
     }
 
-    fn reconcile_selection(&mut self) {
-        let previous = self.selection.clone();
-        while !self
-            .tree
-            .rows(false)
-            .iter()
-            .any(|row| row.path == self.selection)
-        {
-            if !self.selection.pop() {
-                break;
-            }
-        }
-        if self.selection != previous {
-            self.diff.scroll = 0;
-        }
-    }
-
-    fn refilter(&mut self) {
-        let active = !self.filter.is_empty() || self.change_filter.restricted();
-        if !active {
-            if let Some(collapsed) = self.unfiltered_collapsed.take() {
-                self.collapsed = collapsed;
-            }
-        } else if self.unfiltered_collapsed.is_none() {
-            self.unfiltered_collapsed = Some(self.collapsed.clone());
-        }
-        self.tree
-            .filter_changes(&self.snapshot, &self.change_filter);
-        self.tree.refilter(&self.filter, &self.collapsed);
-        if active {
-            let mut revealed = false;
-            for row in self.tree.rows(true).iter().filter(|row| row.directory) {
-                revealed |= self.collapsed.remove(&row.path);
-            }
-            if revealed {
-                self.tree.reveal(&self.collapsed);
-            }
-        }
-        self.reconcile_selection();
-    }
-
     pub fn matching_paths(&self) -> &BTreeSet<PathBuf> {
         self.tree.matching_paths()
     }
@@ -388,222 +276,6 @@ impl State {
         self.tree.rows(include_collapsed)
     }
 
-    fn next_file(&mut self, forward: bool) {
-        let all = self.tree.rows(true);
-        let current = all
-            .iter()
-            .position(|r| r.path == self.selection)
-            .unwrap_or(0);
-        let candidate = if forward {
-            all.iter().skip(current + 1).find(|r| !r.directory)
-        } else {
-            all[..current].iter().rev().find(|r| !r.directory)
-        };
-        if let Some(row) = candidate {
-            self.selection.clone_from(&row.path);
-            let mut revealed = false;
-            for ancestor in row.path.ancestors().skip(1) {
-                revealed |= self.collapsed.remove(ancestor);
-            }
-            self.diff.scroll = 0;
-            if revealed {
-                self.tree.reveal(&self.collapsed);
-            }
-        }
-    }
-
-    fn move_tree(&mut self, forward: bool) {
-        let rows = self.tree.rows(false);
-        let index = rows
-            .iter()
-            .position(|r| r.path == self.selection)
-            .unwrap_or(0);
-        let next = if forward {
-            (index + 1).min(rows.len().saturating_sub(1))
-        } else {
-            index.saturating_sub(1)
-        };
-        if let Some(row) = rows.get(next) {
-            self.selection.clone_from(&row.path);
-            self.diff.scroll = 0;
-        }
-    }
-
-    fn collapse(&mut self) {
-        let is_directory = self
-            .tree(false)
-            .iter()
-            .any(|r| r.path == self.selection && r.directory);
-        if is_directory && !self.collapsed.contains(&self.selection) {
-            self.collapsed.insert(self.selection.clone());
-            self.tree.reveal(&self.collapsed);
-        } else if self.selection.pop() {
-            self.diff.scroll = 0;
-        }
-    }
-
-    fn expand(&mut self) {
-        if self.collapsed.remove(&self.selection) {
-            self.tree.reveal(&self.collapsed);
-        }
-    }
-
-    fn enter_directory(&mut self) {
-        if self.is_collapsed(&self.selection) {
-            self.expand();
-        } else if let Some(child) = self.tree.rows(false).iter().find(|row| {
-            !row.path.as_os_str().is_empty() && row.path.parent() == Some(&self.selection)
-        }) {
-            self.selection.clone_from(&child.path);
-            self.diff.scroll = 0;
-        }
-    }
-
-    fn begin_prompt(&mut self, kind: PromptKind) {
-        let text = match kind {
-            PromptKind::Filter => &self.filter,
-            PromptKind::Find => "",
-            PromptKind::Search => &self.diff.search,
-        };
-        self.prompt = Some(Prompt {
-            kind,
-            editor: Editor::new(text.to_owned()),
-            previous: text.to_owned(),
-            previous_selection: self.selection.clone(),
-            previous_collapsed: self.collapsed.clone(),
-            previous_unfiltered_collapsed: self.unfiltered_collapsed.clone(),
-            filter_deadline: None,
-            find_matches: Vec::new(),
-            find_index: 0,
-        });
-    }
-
-    fn prompt_edited(&mut self, now: Instant) -> bool {
-        if let Some(prompt) = &mut self.prompt
-            && prompt.kind == PromptKind::Filter
-        {
-            prompt.filter_deadline =
-                (prompt.editor.text() != self.filter).then_some(now + FILTER_DEBOUNCE);
-            return false;
-        }
-        self.apply_prompt()
-    }
-
-    fn apply_prompt(&mut self) -> bool {
-        let mut changed = false;
-        if let Some(prompt) = &self.prompt {
-            let query = match prompt.kind {
-                PromptKind::Filter => &mut self.filter,
-                PromptKind::Find => return self.apply_find(),
-                PromptKind::Search => &mut self.diff.search,
-            };
-            changed = query != prompt.editor.text();
-            if changed {
-                prompt.editor.text().clone_into(query);
-                if prompt.kind == PromptKind::Filter {
-                    self.refilter();
-                }
-            }
-        }
-        changed
-    }
-
-    fn apply_find(&mut self) -> bool {
-        let Some(prompt) = &mut self.prompt else {
-            return false;
-        };
-        prompt.find_matches.clear();
-        prompt.find_index = 0;
-        let query = prompt.editor.text();
-        if query.is_empty() {
-            let changed = self.selection != prompt.previous_selection;
-            self.selection.clone_from(&prompt.previous_selection);
-            self.collapsed.clone_from(&prompt.previous_collapsed);
-            self.unfiltered_collapsed
-                .clone_from(&prompt.previous_unfiltered_collapsed);
-            self.tree.reveal(&self.collapsed);
-            if changed {
-                self.diff.scroll = 0;
-            }
-            self.reconcile_selection();
-            return changed;
-        }
-        prompt.find_matches = self.tree.find_files(query);
-        self.select_find_match()
-    }
-
-    fn next_find_match(&mut self) -> bool {
-        let Some(prompt) = &mut self.prompt else {
-            return false;
-        };
-        if prompt.kind != PromptKind::Find || prompt.find_matches.is_empty() {
-            return false;
-        }
-        prompt.find_index = (prompt.find_index + 1) % prompt.find_matches.len();
-        self.select_find_match()
-    }
-
-    fn select_find_match(&mut self) -> bool {
-        let Some(path) = self
-            .prompt
-            .as_ref()
-            .and_then(|prompt| prompt.find_matches.get(prompt.find_index))
-        else {
-            return false;
-        };
-        let changed = self.selection != *path;
-        self.selection.clone_from(path);
-        let mut revealed = false;
-        for ancestor in self.selection.ancestors().skip(1) {
-            revealed |= self.collapsed.remove(ancestor);
-        }
-        if revealed {
-            self.tree.reveal(&self.collapsed);
-        }
-        if changed {
-            self.diff.scroll = 0;
-        }
-        changed
-    }
-
-    fn finish_prompt(&mut self, accept: bool) -> bool {
-        let mut changed = accept
-            && self
-                .prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.kind != PromptKind::Find)
-            && self.apply_prompt();
-        if let Some(prompt) = self.prompt.take()
-            && !accept
-        {
-            match prompt.kind {
-                PromptKind::Filter => {
-                    changed = self.filter != prompt.previous
-                        || self.selection != prompt.previous_selection;
-                    self.filter = prompt.previous;
-                    self.collapsed = prompt.previous_collapsed;
-                    self.unfiltered_collapsed = prompt.previous_unfiltered_collapsed;
-                    self.tree.refilter(&self.filter, &self.collapsed);
-                    self.selection = prompt.previous_selection;
-                }
-                PromptKind::Find => {
-                    changed = self.selection != prompt.previous_selection;
-                    self.collapsed = prompt.previous_collapsed;
-                    self.unfiltered_collapsed = prompt.previous_unfiltered_collapsed;
-                    self.tree.reveal(&self.collapsed);
-                    self.selection = prompt.previous_selection;
-                }
-                PromptKind::Search => {
-                    changed = self.diff.search != prompt.previous;
-                    self.diff.search = prompt.previous;
-                }
-            }
-        }
-        let selection = self.selection.clone();
-        self.reconcile_selection();
-        changed || self.selection != selection
-    }
-
     pub fn scroll_by(&mut self, amount: usize, down: bool, height: usize) {
         self.diff.scroll_by(amount, down, height);
     }
@@ -611,24 +283,21 @@ impl State {
     pub fn jump_match(&mut self, forward: bool, height: usize) {
         self.diff.jump_match(forward, height);
     }
-
-    fn input_action(&mut self, action: Action, now: Instant) -> bool {
-        let changed = self
-            .prompt
-            .as_mut()
-            .is_some_and(|prompt| prompt.editor.edit(action));
-        changed && self.prompt_edited(now)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     mod debounce;
     mod filters;
+    mod prompt;
     mod tree_ux;
 
     use super::*;
-    use crate::model::{Category, Change};
+    use crate::{
+        input::Action,
+        model::{Category, Change},
+    };
+    use std::time::{Duration, Instant};
     fn snapshot() -> Snapshot {
         snapshot_with(&[
             ("src/a.rs", Category::Unstaged),

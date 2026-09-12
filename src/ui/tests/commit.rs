@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::Command;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
 fn draft(subject: &str, body: &str) -> State {
@@ -113,10 +114,10 @@ fn letters_and_spaces_in_the_dialog_do_not_trigger_app_shortcuts() {
     let discard = key(&mut state, KeyCode::Char('D'));
     let commit = key(&mut state, KeyCode::Char('c'));
     // Then
-    assert!(!quit.quit);
-    assert!(!stage.toggle_stage);
-    assert!(!discard.open_discard);
-    assert!(!commit.open_commit);
+    assert_eq!(quit.command, None);
+    assert_eq!(stage.command, None);
+    assert_eq!(discard.command, None);
+    assert_eq!(commit.command, None);
     assert_eq!(state.commit_message().as_deref(), Some("Message\n\nq Dc"));
 }
 
@@ -128,7 +129,7 @@ fn enter_adds_a_body_line_without_submitting() {
     let effects = key(&mut state, KeyCode::Enter);
     state.paste("Second", Instant::now());
     // Then
-    assert!(!effects.submit_commit);
+    assert_eq!(effects.command, None);
     assert_eq!(
         state.commit_message().as_deref(),
         Some("Subject\n\nFirst\nSecond")
@@ -148,7 +149,7 @@ fn control_s_submits_from_the_subject_field() {
         Instant::now(),
     );
     // Then
-    assert!(effects.submit_commit);
+    assert_eq!(effects.command, Some(Command::SubmitCommit));
     assert!(!effects.render);
 }
 
@@ -164,7 +165,7 @@ fn repeated_control_s_does_not_submit() {
     // When
     let effects = state.handle_key(key, &Bindings::defaults(), 20, Instant::now());
     // Then
-    assert!(!effects.submit_commit);
+    assert_eq!(effects.command, None);
 }
 
 #[test]
@@ -209,7 +210,7 @@ fn commit_shortcut_can_be_rebound_without_affecting_text_input() -> AppResult<()
         Instant::now(),
     );
     // Then
-    assert!(effects.open_commit);
+    assert_eq!(effects.command, Some(Command::OpenCommit));
     assert_eq!(
         config
             .bindings
@@ -235,7 +236,7 @@ fn running_commit_ignores_edits_close_and_resubmission() {
         Instant::now(),
     );
     // Then
-    assert!(!effects.submit_commit);
+    assert_eq!(effects.command, None);
     assert!(state.commit_dialog().is_some_and(|dialog| dialog.running()));
     assert_eq!(state.commit_message().as_deref(), Some("Subject\n\nBody"));
 }
