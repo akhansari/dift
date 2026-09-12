@@ -121,6 +121,7 @@ pub(super) struct TreeIndex {
     matching: BTreeSet<PathBuf>,
     all: Vec<TreeRow>,
     visible: Vec<TreeRow>,
+    eligible: BTreeSet<usize>,
 }
 
 impl TreeIndex {
@@ -131,6 +132,7 @@ impl TreeIndex {
             matching: BTreeSet::new(),
             all: Vec::new(),
             visible: Vec::new(),
+            eligible: (0..snapshot.changes.len()).collect(),
         };
         for (index, change) in snapshot.changes.iter().enumerate() {
             let id = tree.insert_path(&change.path);
@@ -187,7 +189,11 @@ impl TreeIndex {
         self.matching.clear();
         for (id, node) in self.nodes.iter().enumerate() {
             indices.clear();
-            if node.changes.is_empty() {
+            if !node
+                .changes
+                .iter()
+                .any(|index| self.eligible.contains(index))
+            {
                 continue;
             }
             if !filter.is_empty() && matcher.indices(&node.searchable, &mut indices).is_none() {
@@ -266,6 +272,35 @@ impl TreeIndex {
         }
     }
 
+    pub(super) fn filter_changes(
+        &mut self,
+        snapshot: &Snapshot,
+        filter: &super::filters::ChangeFilter,
+    ) {
+        self.eligible = snapshot
+            .changes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, change)| filter.matches(change).then_some(index))
+            .collect();
+        for node in &mut self.nodes {
+            node.badges = node
+                .changes
+                .iter()
+                .filter(|index| self.eligible.contains(index))
+                .map(|index| {
+                    let change = &snapshot.changes[*index];
+                    TreeBadge {
+                        category: change.category,
+                        status: change.status,
+                    }
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+        }
+    }
+
     pub(super) fn rows(&self, include_collapsed: bool) -> &[TreeRow] {
         if include_collapsed {
             &self.all
@@ -301,6 +336,7 @@ impl TreeIndex {
             .subtree_paths(selection)
             .filter_map(|path| self.by_path.get(path))
             .flat_map(|id| self.nodes[*id].changes.iter().copied())
+            .filter(|index| self.eligible.contains(index))
             .collect();
         // Snapshot order defines diff category order, independently of tree order.
         indices.sort_unstable();

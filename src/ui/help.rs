@@ -213,6 +213,7 @@ fn description(action: Action) -> &'static str {
         Action::First => "Go to the beginning",
         Action::Last => "Go to the end",
         Action::Filter => "Filter files",
+        Action::ChangeFilter => "Filter changes by category and status",
         Action::Find => "Find a file",
         Action::NextFindMatch => "Next matching file",
         Action::Search => "Search the diff",

@@ -251,11 +251,13 @@ pub(super) fn draw(
     }
     if count == 0 && inner.height > 1 {
         frame.render_widget(
-            Paragraph::new(if state.filter().is_empty() {
-                "No changes"
-            } else {
-                "No matching files"
-            })
+            Paragraph::new(
+                if state.filter().is_empty() && !state.change_filter().restricted() {
+                    "No changes"
+                } else {
+                    "No matching files"
+                },
+            )
             .style(palette.base().fg(palette.muted)),
             Rect {
                 x: inner.x + 1,

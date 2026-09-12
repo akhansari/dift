@@ -206,6 +206,9 @@ impl State {
         height: usize,
         now: Instant,
     ) -> Effects {
+        if self.filter_menu.is_some() {
+            return self.change_filter_key(key);
+        }
         if self.commit_dialog().is_some() {
             return self.commit_key(key, bindings);
         }
@@ -242,6 +245,9 @@ impl State {
     }
 
     pub fn paste(&mut self, text: &str, now: Instant) -> Effects {
+        if self.filter_menu.is_some() {
+            return Effects::default();
+        }
         if self.commit_dialog().is_some() {
             return self.commit_paste(text);
         }
@@ -368,6 +374,7 @@ impl State {
                 }
             }
             Action::Filter => self.begin_prompt(PromptKind::Filter),
+            Action::ChangeFilter => self.begin_change_filter(),
             Action::Find => self.begin_prompt(PromptKind::Find),
             Action::Search => self.begin_prompt(PromptKind::Search),
             Action::NextMatch => self.jump_match(true, height),
@@ -375,8 +382,9 @@ impl State {
             Action::Cancel => {
                 if !self.diff.search.is_empty() {
                     self.diff.search.clear();
-                } else if !self.filter.is_empty() {
+                } else if !self.filter.is_empty() || self.change_filter.selected() {
                     self.filter.clear();
+                    self.change_filter = super::filters::ChangeFilter::default();
                     self.refilter();
                 }
                 effects.render = true;

@@ -3,6 +3,8 @@ mod collection;
 mod commit;
 mod diff;
 mod discard;
+mod filters;
+pub(crate) use filters::STATUSES;
 mod tree;
 mod update;
 
@@ -96,6 +98,9 @@ pub struct State {
     unfiltered_collapsed: Option<BTreeSet<PathBuf>>,
     /// Applied fuzzy query used to filter file paths; draft text lives in the prompt.
     filter: String,
+    change_filter: filters::ChangeFilter,
+    filter_menu: Option<filters::FilterMenu>,
+    comparison: bool,
     /// Active filter or search prompt, if any.
     prompt: Option<Prompt>,
     /// Input scope currently receiving keyboard actions.
@@ -264,6 +269,9 @@ impl State {
             collapsed,
             unfiltered_collapsed: None,
             filter: String::new(),
+            change_filter: filters::ChangeFilter::default(),
+            filter_menu: None,
+            comparison: false,
             prompt: None,
             focus: Scope::Tree,
             sidebar: true,
@@ -284,6 +292,9 @@ impl State {
             .len();
         self.tree = TreeIndex::new(&snapshot, &self.filter, &self.collapsed);
         self.snapshot = Arc::new(snapshot);
+        self.tree
+            .filter_changes(&self.snapshot, &self.change_filter);
+        self.tree.refilter(&self.filter, &self.collapsed);
         if let Some(prompt) = &mut self.prompt
             && prompt.kind == PromptKind::Find
             && !prompt.editor.text().is_empty()
@@ -342,15 +353,18 @@ impl State {
     }
 
     fn refilter(&mut self) {
-        if self.filter.is_empty() {
+        let active = !self.filter.is_empty() || self.change_filter.restricted();
+        if !active {
             if let Some(collapsed) = self.unfiltered_collapsed.take() {
                 self.collapsed = collapsed;
             }
         } else if self.unfiltered_collapsed.is_none() {
             self.unfiltered_collapsed = Some(self.collapsed.clone());
         }
+        self.tree
+            .filter_changes(&self.snapshot, &self.change_filter);
         self.tree.refilter(&self.filter, &self.collapsed);
-        if !self.filter.is_empty() {
+        if active {
             let mut revealed = false;
             for row in self.tree.rows(true).iter().filter(|row| row.directory) {
                 revealed |= self.collapsed.remove(&row.path);
@@ -610,6 +624,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     mod debounce;
+    mod filters;
     mod tree_ux;
 
     use super::*;

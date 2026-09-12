@@ -68,6 +68,7 @@ pub enum Action {
     First,
     Last,
     Filter,
+    ChangeFilter,
     Find,
     NextFindMatch,
     Search,
@@ -93,7 +94,7 @@ pub enum Action {
     ClearAfter,
 }
 impl Action {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::Quit,
         Self::Sidebar,
         Self::Layout,
@@ -113,6 +114,7 @@ impl Action {
         Self::First,
         Self::Last,
         Self::Filter,
+        Self::ChangeFilter,
         Self::Find,
         Self::NextFindMatch,
         Self::Search,
@@ -158,6 +160,7 @@ impl Action {
             Self::First => "first",
             Self::Last => "last",
             Self::Filter => "filter",
+            Self::ChangeFilter => "change-filter",
             Self::Find => "find",
             Self::NextFindMatch => "next-find-match",
             Self::Search => "search",
@@ -346,6 +349,7 @@ impl Bindings {
             (Action::First, "home"),
             (Action::Last, "end"),
             (Action::Filter, "f"),
+            (Action::ChangeFilter, "ctrl-f"),
             (Action::Find, "F"),
             (Action::Search, "/"),
             (Action::NextMatch, "]"),

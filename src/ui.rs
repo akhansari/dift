@@ -4,6 +4,7 @@ mod collect;
 mod commit;
 mod discard;
 mod editor;
+mod filters;
 #[cfg(test)]
 mod fixtures;
 mod help;
@@ -60,7 +61,10 @@ impl Interaction {
         height: usize,
         now: Instant,
     ) -> Effects {
-        if state.discard_menu().is_some() || state.commit_dialog().is_some() {
+        if state.discard_menu().is_some()
+            || state.commit_dialog().is_some()
+            || state.filter_menu().is_some()
+        {
             self.selection.clear();
             return state.handle_key(key, bindings, height, now);
         }
@@ -75,7 +79,11 @@ impl Interaction {
             };
         }
         let mut effects = self.tree.handle_key(state, key, bindings, height, now);
-        if effects.render || state.help() || state.prompt().is_some() {
+        if effects.render
+            || state.help()
+            || state.prompt().is_some()
+            || state.filter_menu().is_some()
+        {
             effects.redraw |= self.selection.clear();
         }
         effects
@@ -104,6 +112,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     let mut state = State::with_whitespace(config.split, config.whitespace);
+    state.set_comparison(!watching);
     let mut mutation_busy = false;
     let mut committing: Option<commit::Session> = None;
     let mut interaction = Interaction::default();
@@ -439,6 +448,7 @@ impl ViewAreas {
         if state.prompt().is_some()
             || state.discard_menu().is_some()
             || state.commit_dialog().is_some()
+            || state.filter_menu().is_some()
         {
             return Effects {
                 redraw,
@@ -670,6 +680,12 @@ fn draw(
                 Span::styled(state.filter(), accent),
             ]);
         }
+        if state.change_filter().selected() {
+            spans.push(Span::styled(
+                format!(" · {}", state.change_filter().summary()),
+                accent,
+            ));
+        }
         if !state.search().is_empty() {
             spans.extend([
                 Span::styled(" · ", muted),
@@ -767,6 +783,7 @@ fn draw(
     }
     discard::draw(frame, state, config, &palette);
     commit::draw(frame, state, &palette);
+    filters::draw(frame, state, &palette);
 }
 
 fn draw_toast(frame: &mut Frame, message: &str, body: Rect, palette: &Palette) {
