@@ -86,7 +86,9 @@ impl SyntaxCache {
         let entry = self.cache.take(|entry| {
             entry.hash == hash && entry.syntax == syntax.name && entry.source == *source
         });
-        let mut entry = entry.unwrap_or_else(|| self.seed(syntax, source, hash, theme));
+        let mut entry = entry
+            .map(|(entry, _)| entry)
+            .unwrap_or_else(|| self.seed(syntax, source, hash, theme));
         let target = through.min(source.split_inclusive('\n').count());
         if entry.colors.len() >= target {
             self.reused_lines += target as u64;

@@ -425,9 +425,13 @@ pub struct Renderer {
 }
 impl Renderer {
     pub fn validate_theme(config: &Config) -> Result<(), RenderError> {
+        Self::theme_set(config).map(|_| ())
+    }
+
+    fn theme_set(config: &Config) -> Result<ThemeSet, RenderError> {
         let themes = ThemeSet::load_defaults();
         if themes.themes.contains_key(&config.theme) {
-            Ok(())
+            Ok(themes)
         } else {
             Err(RenderError::UnknownTheme {
                 name: config.theme.clone(),
@@ -437,10 +441,10 @@ impl Renderer {
     }
 
     pub fn new(config: Config) -> Result<Self, RenderError> {
-        Self::validate_theme(&config)?;
+        let themes = Self::theme_set(&config)?;
         Ok(Self {
             syntaxes: two_face::syntax::extra_newlines(),
-            themes: ThemeSet::load_defaults(),
+            themes,
             config,
             syntax: SyntaxCache::new(),
             prepared: Cache::new(32 * 1024 * 1024),
@@ -642,11 +646,11 @@ impl Renderer {
         cancel: &Cancellation,
     ) -> Result<Arc<Prepared>, Cancelled> {
         cancel.check()?;
-        if let Some(entry) = self.prepared.take(|entry| {
+        if let Some((entry, bytes)) = self.prepared.take(|entry| {
             entry.hash == hash && entry.change.as_ref() == change && (!refined || entry.refined)
         }) {
             self.stats.prepared_hits += 1;
-            self.prepared.insert(Arc::clone(&entry), entry.bytes());
+            self.prepared.insert(Arc::clone(&entry), bytes);
             return Ok(entry);
         }
         let shared = self
@@ -675,7 +679,7 @@ impl Renderer {
         spec: RenderSpec<'_>,
         enriched: bool,
     ) -> Option<Arc<Document>> {
-        let entry = self.layouts.take(|entry| {
+        let (entry, bytes) = self.layouts.take(|entry| {
             entry.prepared.hash == hash
                 && entry.prepared.change.as_ref() == change
                 && entry.width == spec.width.max(4)
@@ -686,7 +690,6 @@ impl Renderer {
         })?;
         self.stats.layout_hits += 1;
         let document = Arc::clone(&entry.document);
-        let bytes = entry.bytes();
         self.layouts.insert(entry, bytes);
         Some(document)
     }

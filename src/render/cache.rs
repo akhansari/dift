@@ -18,11 +18,11 @@ impl<T> Cache<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.entries.iter().map(|(value, _)| value)
     }
-    pub fn take(&mut self, predicate: impl FnMut(&T) -> bool) -> Option<T> {
+    pub fn take(&mut self, predicate: impl FnMut(&T) -> bool) -> Option<(T, usize)> {
         let index = self.iter().position(predicate)?;
         let (value, bytes) = self.entries.remove(index)?;
         self.bytes = self.bytes.saturating_sub(bytes);
-        Some(value)
+        Some((value, bytes))
     }
     pub fn insert(&mut self, value: T, bytes: usize) {
         if bytes > self.limit {

@@ -48,7 +48,6 @@ pub struct RenderWorker {
 }
 impl RenderWorker {
     pub fn spawn(config: Config) -> crate::AppResult<Self> {
-        Renderer::validate_theme(&config)?;
         let (requests, incoming) = mpsc::channel::<RenderRequest>();
         let (outgoing, results) = mpsc::channel();
         let (ready, initialized) = mpsc::sync_channel(1);

@@ -178,21 +178,28 @@ fn cells(
     let mut rows = Vec::new();
     let mut row = make_row(0, true);
     let mut logical_column = 0;
+    let mut colors = colors.iter().peekable();
     for (byte, ch) in text.char_indices() {
         if byte.is_multiple_of(256) {
             cancel.check()?;
         }
         let end = byte + ch.len_utf8();
+        let escaped;
         let text = if ch == '\t' {
-            " ".repeat(4 - logical_column % 4)
+            &"    "[..4 - logical_column % 4]
         } else if ch.is_control() {
-            ch.escape_default().to_string()
+            escaped = ch.escape_default().to_string();
+            &escaped
         } else {
-            ch.to_string()
+            &text[byte..end]
         };
-        logical_column += UnicodeWidthStr::width(text.as_str());
+        logical_column += UnicodeWidthStr::width(text);
         let mut style = base;
-        if let Some((_, syntax)) = colors.iter().find(|(r, _)| r.contains(&byte)) {
+        // Source bytes and syntax ranges are ordered, so each span is visited once.
+        while colors.peek().is_some_and(|(range, _)| range.end <= byte) {
+            colors.next();
+        }
+        if let Some((_, syntax)) = colors.peek().filter(|(range, _)| range.contains(&byte)) {
             style = style.patch(*syntax);
         }
         if spec.emphasis.iter().any(|r| r.start < end && r.end > byte) {
