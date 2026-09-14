@@ -117,7 +117,11 @@ impl Help {
     pub(super) fn draw(self, frame: &mut Frame, offset: usize, palette: &Palette) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Keybindings ")
+            .title(concat!(
+                " Dift ",
+                env!("CARGO_PKG_VERSION"),
+                " Keybindings "
+            ))
             .style(palette.base().bg(palette.panel))
             .border_style(palette.base().bg(palette.panel).fg(palette.accent));
         frame.render_widget(Clear, self.rect);

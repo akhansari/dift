@@ -522,7 +522,7 @@ fn help_scrolls_back_immediately_after_reaching_the_bottom() -> Result {
     let mut session = fixture.start()?;
     session.send("?")?;
     session.wait_for("help popup", Duration::from_secs(4), |screen| {
-        screen.contains("Keybindings")
+        screen.contains(concat!("Dift ", env!("CARGO_PKG_VERSION")))
     })?;
     session.send("\x1b[Fjjjjjj")?;
     session.wait_for("last help entry", Duration::from_secs(4), |screen| {
@@ -538,7 +538,7 @@ fn help_scrolls_back_immediately_after_reaching_the_bottom() -> Result {
     )?;
     session.send("?")?;
     session.wait_for("help closed", Duration::from_secs(4), |screen| {
-        !screen.contains("Keybindings")
+        !screen.contains(concat!("Dift ", env!("CARGO_PKG_VERSION")))
     })?;
     session.quit()
 }

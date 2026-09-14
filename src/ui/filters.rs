@@ -14,36 +14,7 @@ pub(super) fn draw(frame: &mut Frame, state: &State, palette: &Palette) {
     let Some(menu) = state.filter_menu() else {
         return;
     };
-    let area = frame.area();
-    let width = area.width.saturating_sub(2).min(64);
-    let height = area
-        .height
-        .saturating_sub(2)
-        .min(if state.comparison() { 16 } else { 20 });
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
     let style = palette.base().bg(palette.panel);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Change filters ")
-        .style(style)
-        .border_style(style.fg(palette.accent));
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
-    if inner.width < 48 || inner.height < if state.comparison() { 14 } else { 18 } {
-        frame.render_widget(
-            Paragraph::new("Enlarge terminal to edit filters. Esc cancels.")
-                .style(style)
-                .wrap(Wrap { trim: false }),
-            inner,
-        );
-        return;
-    }
     let filter = state.change_filter();
     let option = |index, checked, label| {
         Line::styled(
@@ -80,9 +51,34 @@ pub(super) fn draw(frame: &mut Frame, state: &State, palette: &Palette) {
     }
     lines.extend([
         Line::raw(""),
-        Line::raw("None or all checked = no restriction"),
-        Line::raw("↑/↓ move · Space toggle · Tab/Shift-Tab group"),
+        Line::raw("↑/↓ move · Space toggle · Tab/Shift-Tab Switch group"),
         Line::raw("Enter accept · Esc cancel · Ctrl-R reset selections"),
     ]);
+    let area = frame.area();
+    let width = area.width.saturating_sub(2).min(64);
+    let height = usize::from(area.height.saturating_sub(2)).min(lines.len() + 2) as u16;
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Change filters ")
+        .style(style)
+        .border_style(style.fg(palette.accent));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    if inner.width < 48 || usize::from(inner.height) < lines.len() {
+        frame.render_widget(
+            Paragraph::new("Enlarge terminal to edit filters. Esc cancels.")
+                .style(style)
+                .wrap(Wrap { trim: false }),
+            inner,
+        );
+        return;
+    }
     frame.render_widget(Paragraph::new(lines).style(style), inner);
 }

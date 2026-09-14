@@ -656,7 +656,7 @@ fn help_shows_a_scrollbar_in_a_centered_eighty_percent_height_popup() -> AppResu
     assert_eq!(buffer[(98, 2)].symbol(), "┐");
     assert_eq!(buffer[(21, 17)].symbol(), "└");
     assert_eq!(buffer[(98, 17)].symbol(), "┘");
-    assert!(line(&buffer, 2).contains("Keybindings"));
+    assert!(line(&buffer, 2).contains(concat!("Dift ", env!("CARGO_PKG_VERSION"))));
     assert_eq!(buffer[(97, 3)].symbol(), "┃");
     assert_eq!(buffer[(97, 3)].fg, Palette::new(false).accent);
     assert_eq!(buffer[(97, 16)].symbol(), " ");
@@ -763,7 +763,7 @@ fn help_hides_the_active_toast() -> AppResult<()> {
     // Then
     assert_eq!(buffer[(119, 6)].symbol(), " ");
     assert!(!line(&buffer, 7).contains("Whitespace:"));
-    assert!(line(&buffer, 1).contains("Keybindings"));
+    assert!(line(&buffer, 1).contains(concat!("Dift ", env!("CARGO_PKG_VERSION"))));
     Ok(())
 }
 
