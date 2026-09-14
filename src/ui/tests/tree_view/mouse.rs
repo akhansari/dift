@@ -279,7 +279,7 @@ fn nerd_folder_icons_are_toggle_targets() -> AppResult<()> {
 }
 
 #[test]
-fn nested_folder_arrows_follow_compressed_indentation() -> AppResult<()> {
+fn compact_folder_arrows_follow_compressed_indentation() -> AppResult<()> {
     // Given
     let mut tree = MouseTree::new(
         state_with(&[("one/two/three/file.rs", Category::Unstaged)]),
@@ -287,10 +287,10 @@ fn nested_folder_arrows_follow_compressed_indentation() -> AppResult<()> {
         6,
     )?;
     // When
-    tree.click(5, 3)?;
+    tree.click(1, 1)?;
     // Then
     assert!(tree.state.is_collapsed(Path::new("one/two/three")));
-    assert!(tree.line(3).contains('▸'));
+    assert!(tree.line(1).contains('▸'));
     assert_eq!(tree.state.selection(), Path::new(""));
     Ok(())
 }

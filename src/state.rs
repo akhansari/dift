@@ -80,7 +80,7 @@ impl State {
         &self.selection
     }
     pub fn is_collapsed(&self, path: &Path) -> bool {
-        self.collapsed.contains(path)
+        path.ancestors().any(|path| self.collapsed.contains(path))
     }
     pub fn filter(&self) -> &str {
         &self.filter

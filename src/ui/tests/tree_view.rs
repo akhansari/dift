@@ -179,12 +179,12 @@ fn deep_paths_give_space_to_the_filename_and_preserve_its_extension() -> crate::
     let buffer = render(&state, &Config::default(), 16, 12)?;
     // Then
     assert!(
-        line(&buffer, 7).contains("long…e.rs"),
+        line(&buffer, 2).contains("long…e.rs"),
         "{}",
-        line(&buffer, 7)
+        line(&buffer, 2)
     );
-    assert_eq!(buffer[(13, 7)].symbol(), "M");
-    assert_eq!(buffer[(1, 7)].symbol(), " ");
+    assert_eq!(buffer[(13, 2)].symbol(), "M");
+    assert_eq!(buffer[(1, 2)].symbol(), " ");
     Ok(())
 }
 

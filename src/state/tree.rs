@@ -73,7 +73,7 @@ pub struct TreeRow {
     pub depth: usize,
     /// Git status markers shown beside the path, ordered by category.
     pub badges: Vec<TreeBadge>,
-    /// Escaped basename, or the label for the repository root.
+    /// Escaped basename, compact directory chain, or repository root label.
     pub name: String,
     /// Distinct matching paths in this subtree, including this path if changed.
     pub count: usize,
@@ -232,16 +232,39 @@ impl TreeIndex {
             .collect();
         self.all.clear();
         let mut pending = vec![(0, 0)];
-        while let Some((id, depth)) = pending.pop() {
+        while let Some((mut id, depth)) = pending.pop() {
+            let start = id;
+            let mut name = self.nodes[id].name.clone();
+            let mut match_indices: Vec<_> = matches[id].iter().copied().collect();
+            // Only directories without their own matching change may disappear.
+            // A path can itself be a changed file in another Git category.
+            while id != 0 && !self.matching.contains(&self.nodes[id].path) {
+                let mut children = self.nodes[id]
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|child| counts[*child] > 0);
+                let Some(child) = children.next() else {
+                    break;
+                };
+                if children.next().is_some() || !directories[child] {
+                    break;
+                }
+                let offset = self.nodes[child].name_start - self.nodes[start].name_start;
+                name.push('/');
+                name.push_str(&self.nodes[child].name);
+                match_indices.extend(matches[child].iter().map(|index| offset + index));
+                id = child;
+            }
             let node = &self.nodes[id];
             self.all.push(TreeRow {
                 path: node.path.clone(),
                 directory: directories[id],
                 depth,
                 badges: node.badges.clone(),
-                name: node.name.clone(),
+                name,
                 count: counts[id],
-                match_indices: matches[id].iter().copied().collect(),
+                match_indices,
             });
             let mut children: Vec<_> = node
                 .children
@@ -269,7 +292,9 @@ impl TreeIndex {
             if hidden_below.is_some_and(|depth| row.depth > depth) {
                 continue;
             }
-            hidden_below = (row.directory && collapsed.contains(&row.path)).then_some(row.depth);
+            hidden_below = (row.directory
+                && row.path.ancestors().any(|path| collapsed.contains(path)))
+            .then_some(row.depth);
             self.visible.push(row.clone());
         }
     }

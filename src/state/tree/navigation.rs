@@ -14,6 +14,17 @@ impl State {
             .iter()
             .any(|row| row.path == self.selection)
         {
+            // A former directory may now be inside a compact row.
+            if let Some(row) = self
+                .tree
+                .rows(false)
+                .iter()
+                .find(|row| row.directory && row.path.starts_with(&self.selection))
+            {
+                self.selection.clone_from(&row.path);
+                changed = true;
+                break;
+            }
             if !self.selection.pop() {
                 break;
             }
@@ -75,16 +86,27 @@ impl State {
             .tree(false)
             .iter()
             .any(|row| row.path == self.selection && row.directory);
-        if is_directory && !self.collapsed.contains(&self.selection) {
+        if is_directory && !self.is_collapsed(&self.selection) {
             self.collapsed.insert(self.selection.clone());
             self.tree.reveal(&self.collapsed);
-        } else if self.selection.pop() {
+        } else if let Some(parent) = self
+            .tree
+            .rows(false)
+            .iter()
+            .rev()
+            .find(|row| row.path != self.selection && self.selection.starts_with(&row.path))
+        {
+            self.selection.clone_from(&parent.path);
             self.diff.scroll = 0;
         }
     }
 
     pub(in crate::state) fn expand(&mut self) {
-        if self.collapsed.remove(&self.selection) {
+        let mut expanded = false;
+        for ancestor in self.selection.ancestors() {
+            expanded |= self.collapsed.remove(ancestor);
+        }
+        if expanded {
             self.tree.reveal(&self.collapsed);
         }
     }
@@ -92,9 +114,12 @@ impl State {
     pub(in crate::state) fn enter_directory(&mut self) {
         if self.is_collapsed(&self.selection) {
             self.expand();
-        } else if let Some(child) = self.tree.rows(false).iter().find(|row| {
-            !row.path.as_os_str().is_empty() && row.path.parent() == Some(&self.selection)
-        }) {
+        } else if let Some(child) = self
+            .tree
+            .rows(false)
+            .iter()
+            .find(|row| row.path != self.selection && row.path.starts_with(&self.selection))
+        {
             self.selection.clone_from(&child.path);
             self.diff.scroll = 0;
         }
@@ -122,7 +147,11 @@ impl State {
         let Some(row) = self.tree.rows(false).get(index).filter(|row| row.directory) else {
             return Effects::default();
         };
-        if !self.collapsed.remove(&row.path) {
+        if self.is_collapsed(&row.path) {
+            for ancestor in row.path.ancestors() {
+                self.collapsed.remove(ancestor);
+            }
+        } else {
             self.collapsed.insert(row.path.clone());
         }
         self.tree.reveal(&self.collapsed);

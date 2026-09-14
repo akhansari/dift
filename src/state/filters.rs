@@ -94,7 +94,9 @@ impl State {
         if active {
             let mut revealed = false;
             for row in self.tree.rows(true).iter().filter(|row| row.directory) {
-                revealed |= self.collapsed.remove(&row.path);
+                for ancestor in row.path.ancestors() {
+                    revealed |= self.collapsed.remove(ancestor);
+                }
             }
             if revealed {
                 self.tree.reveal(&self.collapsed);

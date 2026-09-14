@@ -28,6 +28,161 @@ fn find(state: &mut State, query: &str) {
     state.paste(query, Instant::now());
 }
 
+fn compact_state() -> State {
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("dir-a/dir-b/dir-c/file-a", Category::Unstaged),
+        ("dir-a/dir-b/dir-c/file-b", Category::Staged),
+    ]));
+    state
+}
+
+#[test]
+fn directory_chains_share_one_row_above_their_files() -> AppResult<()> {
+    // Given
+    let state = compact_state();
+    // When
+    let directory = row(&state, "dir-a/dir-b/dir-c")?;
+    // Then
+    assert_eq!(directory.name, "dir-a/dir-b/dir-c");
+    assert_eq!(directory.depth, 1);
+    assert_eq!(directory.count, 2);
+    assert_eq!(row(&state, "dir-a/dir-b/dir-c/file-a")?.depth, 2);
+    assert_eq!(state.tree(false).len(), 4);
+    Ok(())
+}
+
+#[test]
+fn right_enters_a_compact_directory_from_its_displayed_parent() {
+    // Given
+    let mut state = compact_state();
+    // When
+    state.action(Action::Right, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("dir-a/dir-b/dir-c"));
+    assert_eq!(state.selected_changes(), [0, 1]);
+}
+
+#[test]
+fn left_skips_hidden_parents_of_a_collapsed_compact_directory() {
+    // Given
+    let mut state = compact_state();
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    // When
+    state.action(Action::Left, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new(""));
+    assert_eq!(state.tree(false).len(), 2);
+}
+
+#[test]
+fn compact_directory_search_highlights_each_component_by_grapheme() -> AppResult<()> {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[("a\u{301}/b/c/file", Category::Unstaged)]));
+    // When
+    filter(&mut state, "a/b/c");
+    // Then
+    let directory = row(&state, "a\u{301}/b/c")?;
+    assert_eq!(directory.name, "a\u{301}/b/c");
+    assert_eq!(directory.match_indices, [0, 2, 4]);
+    Ok(())
+}
+
+#[test]
+fn compaction_stops_at_files_and_branches() -> AppResult<()> {
+    // Given
+    let mut state = State::new(false);
+    // When
+    state.update_snapshot(snapshot_with(&[
+        ("a/b/file", Category::Unstaged),
+        ("a/b/c/d/file", Category::Unstaged),
+        ("x/y/file", Category::Unstaged),
+        ("x/z/file", Category::Unstaged),
+    ]));
+    // Then
+    assert_eq!(row(&state, "a/b")?.name, "a/b");
+    assert_eq!(row(&state, "a/b/c/d")?.name, "c/d");
+    assert_eq!(row(&state, "x")?.name, "x");
+    assert_eq!(row(&state, "x/y")?.name, "y");
+    assert_eq!(row(&state, "x/z")?.name, "z");
+    Ok(())
+}
+
+#[test]
+fn filtering_compacts_newly_single_child_directories_and_reveals_them() -> AppResult<()> {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/b/file", Category::Unstaged),
+        ("a/other", Category::Unstaged),
+    ]));
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    // When
+    filter(&mut state, "file");
+    // Then
+    assert_eq!(row(&state, "a/b")?.name, "a/b");
+    assert_eq!(state.selection(), Path::new("a/b"));
+    assert_eq!(state.tree(false).len(), 3);
+    assert!(!state.is_collapsed(Path::new("a/b")));
+    Ok(())
+}
+
+#[test]
+fn compaction_preserves_a_directory_with_its_own_changed_file_status() -> AppResult<()> {
+    // Given
+    let mut state = State::new(false);
+    // When
+    state.update_snapshot(snapshot_with(&[
+        ("a", Category::Staged),
+        ("a/b/c/file", Category::Unstaged),
+    ]));
+    // Then
+    assert_eq!(row(&state, "a")?.count, 2);
+    assert_eq!(row(&state, "a")?.badges.len(), 1);
+    assert_eq!(row(&state, "a/b/c")?.name, "b/c");
+    Ok(())
+}
+
+#[test]
+fn refresh_preserves_collapse_when_the_selected_directory_becomes_compact() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/b/file", Category::Unstaged),
+        ("a/other", Category::Unstaged),
+    ]));
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    // When
+    state.update_snapshot(snapshot_with(&[("a/b/file", Category::Unstaged)]));
+    // Then
+    assert_eq!(state.selection(), Path::new("a/b"));
+    assert!(state.is_collapsed(Path::new("a/b")));
+    assert_eq!(state.tree(false).len(), 2);
+}
+
+#[test]
+fn expanding_a_compact_directory_clears_its_former_ancestor_collapse() {
+    // Given
+    let mut state = State::new(false);
+    state.update_snapshot(snapshot_with(&[
+        ("a/b/file", Category::Unstaged),
+        ("a/other", Category::Unstaged),
+    ]));
+    state.action(Action::Down, 10, Instant::now());
+    state.action(Action::Left, 10, Instant::now());
+    state.update_snapshot(snapshot_with(&[("a/b/file", Category::Unstaged)]));
+    // When
+    state.action(Action::Right, 10, Instant::now());
+    // Then
+    assert_eq!(state.selection(), Path::new("a/b"));
+    assert!(!state.is_collapsed(Path::new("a/b")));
+    assert_eq!(state.tree(false).len(), 3);
+}
+
 #[test]
 fn directories_count_each_changed_path_once() -> AppResult<()> {
     // Given

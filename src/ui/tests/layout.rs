@@ -46,6 +46,18 @@ fn state_with(path: &str, lines: usize) -> State {
     state
 }
 
+fn state_with_files(paths: &[&str], lines: usize) -> State {
+    let mut state = State::new(false);
+    state.update_snapshot(Snapshot {
+        changes: paths
+            .iter()
+            .flat_map(|path| state_with(path, lines).snapshot().changes.clone())
+            .collect(),
+        ..Snapshot::default()
+    });
+    state
+}
+
 fn state_with_whitespace_toast() -> State {
     let mut state = state_with("main.rs", 1);
     state.action(Action::Whitespace, 8, Instant::now());
@@ -194,7 +206,7 @@ fn hiding_the_sidebar_removes_the_divider_and_its_junction() -> AppResult<()> {
 #[test]
 fn opening_the_filter_keeps_the_scrollbar_at_the_top_of_the_tree() -> AppResult<()> {
     // Given
-    let mut state = state_with("a/b/c/d/main.rs", 1);
+    let mut state = state_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"], 1);
     let config = Config::default();
     let mut terminal = Terminal::new(TestBackend::new(120, 8))?;
     draw_into(&mut terminal, &state, &config)?;
@@ -232,7 +244,8 @@ fn editing_a_filter_keeps_the_divider_when_the_tree_fits() -> AppResult<()> {
     // Then
     let buffer = terminal.backend().buffer();
     assert!(line(buffer, 0).contains("All changes"));
-    assert!(line(buffer, 4).contains("main.rs"));
+    assert!(line(buffer, 1).contains("a/b/c"));
+    assert!(line(buffer, 2).contains("main.rs"));
     assert_eq!(line(buffer, 6).trim(), "Watching");
     assert!(line(buffer, 7).starts_with("Filter › main"));
     assert_eq!(buffer[(33, 0)].symbol(), "│");

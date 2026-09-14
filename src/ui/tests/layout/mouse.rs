@@ -218,7 +218,7 @@ fn footer_wheel_events_do_not_scroll_the_diff() -> AppResult<()> {
 #[test]
 fn wheel_over_tree_scrolls_only_tree_even_when_diff_has_focus() -> AppResult<()> {
     // Given
-    let mut state = state_with("a/b/c/d/e/f/g.rs", 40);
+    let mut state = state_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"], 40);
     prepare(&mut state, 90, 6)?;
     state.action(Action::Focus, 3, Instant::now());
     let view = ViewAreas::new(Rect::new(0, 0, 90, 6), true);
@@ -247,7 +247,7 @@ fn wheel_over_tree_scrolls_only_tree_even_when_diff_has_focus() -> AppResult<()>
             ..Effects::default()
         }
     );
-    assert_eq!(terminal.backend().buffer()[(9, 0)].symbol(), "c");
+    assert!(line(terminal.backend().buffer(), 0).contains("c.rs"));
     Ok(())
 }
 
