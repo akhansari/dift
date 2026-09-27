@@ -744,7 +744,7 @@ fn help_lists_the_find_binding() -> AppResult<()> {
     assert!(
         (0..20)
             .map(|y| line(&buffer, y))
-            .any(|row| row.contains("shift-f") && row.contains("Find a file"))
+            .any(|row| row.contains(" F  ") && row.contains("Find a file"))
     );
     Ok(())
 }
@@ -841,7 +841,7 @@ fn help_lists_the_line_number_toggle() -> AppResult<()> {
     assert!(
         (0..20)
             .map(|y| line(&buffer, y))
-            .any(|row| row.contains("shift-l") && row.contains("line numbers"))
+            .any(|row| row.contains(" L  ") && row.contains("line numbers"))
     );
     Ok(())
 }

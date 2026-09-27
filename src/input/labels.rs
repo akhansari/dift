@@ -16,10 +16,6 @@ impl Key {
         }
         match self.code {
             KeyCode::Char(' ') => label.push_str("space"),
-            KeyCode::Char(ch) if ch.is_ascii_uppercase() => {
-                label.push_str("shift-");
-                label.push(ch.to_ascii_lowercase());
-            }
             KeyCode::Char(ch) => label.push(ch),
             code => label.push_str(match code {
                 KeyCode::Enter => "enter",
@@ -79,6 +75,40 @@ mod tests {
         // Then: the short label is distinct from the configuration spelling.
         assert_eq!(label, "pgDn");
         assert_eq!(key.to_string(), "page-down");
+        Ok(())
+    }
+
+    #[test]
+    fn shifted_letters_display_as_uppercase() -> Result<(), super::super::BindingError> {
+        // Given: a shifted letter shortcut.
+        let key = Key::parse("shift-i")?;
+        // When: naming that key for a terminal hint.
+        let label = key.label();
+        // Then: the screen shows the letter, while configuration retains its canonical name.
+        assert_eq!(label, "I");
+        assert_eq!(key.to_string(), "shift-i");
+        Ok(())
+    }
+
+    #[test]
+    fn other_modifiers_remain_on_shifted_letters() -> Result<(), super::super::BindingError> {
+        // Given: a control-shift-letter shortcut.
+        let key = Key::parse("ctrl-shift-i")?;
+        // When: naming that key for a terminal hint.
+        let label = key.label();
+        // Then: control remains visible, while shift is expressed by the uppercase letter.
+        assert_eq!(label, "ctrl-I");
+        Ok(())
+    }
+
+    #[test]
+    fn shifted_special_keys_keep_the_shift_modifier() -> Result<(), super::super::BindingError> {
+        // Given: a shifted tab shortcut.
+        let key = Key::parse("shift-tab")?;
+        // When: naming that key for a terminal hint.
+        let label = key.label();
+        // Then: non-letter keys still display shift explicitly.
+        assert_eq!(label, "shift-tab");
         Ok(())
     }
 
