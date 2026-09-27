@@ -360,6 +360,7 @@ mod tests {
         fixture.write("tracked.txt", "working tree\n")?;
         let copy = HistoricalCopy::new(&repo, &commit, Path::new("tracked.txt"))?;
         let path = copy.directory.path().join("tracked.txt");
+        assert_eq!(fs::read_to_string(&path)?, "original\n");
         // When: editing and dropping the temporary copy.
         fs::write(&path, "edited\n")?;
         drop(copy);

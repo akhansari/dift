@@ -35,8 +35,22 @@ fn discard_menu_keeps_options_above_its_shortcut_footer() -> AppResult<()> {
     let text = text(&buffer);
     assert!(text.contains("› Cancel"));
     assert!(!text.contains(" accept · "));
-    assert!(text.contains("down|j/up|k move · enter select"));
-    assert!(text.contains("enter select · esc cancel"));
+    let option = text
+        .lines()
+        .position(|line| line.contains("› Cancel"))
+        .ok_or("Missing cancel option")?;
+    let footer = text
+        .lines()
+        .position(|line| line.contains("down|j/up|k move · enter select · esc cancel"))
+        .ok_or("Missing discard footer")?;
+    assert!(option < footer, "discard footer must follow its options");
+    assert!(
+        !text
+            .lines()
+            .nth(option)
+            .ok_or("Missing option row")?
+            .contains("enter select")
+    );
     Ok(())
 }
 

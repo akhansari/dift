@@ -64,24 +64,6 @@ fn commit_details_use_the_status_row_instead_of_a_header() -> Result {
 }
 
 #[test]
-fn commit_details_show_only_history_shortcuts_in_the_footer() -> Result {
-    // Given: a commit opened from history in a wide terminal.
-    let fixture = Fixture::new()?;
-    let mut session = fixture.start()?;
-    session.send("t")?;
-    session.wait("initial (HEAD)")?;
-    // When: showing the commit's Changes view.
-    session.send("\r")?;
-    session.wait("v timecapsule")?;
-    // Then: no shortcuts from the worktree footer remain after the history hints.
-    let footer = session.screen.row(session.screen.rows() - 1);
-    assert!(footer.trim_end().ends_with("q quit"), "{footer}");
-    assert_eq!(footer.matches("help").count(), 1, "{footer}");
-    assert!(!footer.contains("/ search"), "{footer}");
-    session.quit()
-}
-
-#[test]
 fn commit_help_scrolls_with_the_keyboard() -> Result {
     // Given: the help overlay in a historical commit viewer.
     let fixture = Fixture::new()?;

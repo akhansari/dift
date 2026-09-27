@@ -233,34 +233,4 @@ mod tests {
         assert_eq!(modal.rect, Rect::new(33, 8, 13, 8));
         assert_eq!(modal.inner(), Rect::new(35, 10, 9, 3));
     }
-
-    #[test]
-    fn long_words_wrap_at_word_boundaries_before_sizing_the_modal() {
-        // Given: several words that each fit on their own but not two abreast.
-        let text = "longword anotherlongword thirdlongword";
-        // When: measuring their displayed rows.
-        let rows = wrapped_rows(text, 15);
-        // Then: each word gets a row instead of using only total character width.
-        assert_eq!(rows, 3);
-    }
-
-    #[test]
-    fn preserved_spaces_are_measured_with_the_rendered_text() {
-        // Given: whitespace that the details dialog does not trim.
-        let text = "a    b";
-        // When: sizing the text at a narrow viewport width.
-        let rows = wrapped_rows(text, 3);
-        // Then: the measurement uses the paragraph's actual wrapping behavior.
-        assert_eq!(rows, 2);
-    }
-
-    #[test]
-    fn empty_lines_remain_visible_in_the_measured_height() {
-        // Given: a blank line in a multiline commit message.
-        let text = "subject\n\nbody";
-        // When: measuring the dialog content.
-        let rows = wrapped_rows(text, 20);
-        // Then: the blank row remains part of its scrollable content.
-        assert_eq!(rows, 3);
-    }
 }

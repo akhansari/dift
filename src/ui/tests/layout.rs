@@ -165,6 +165,37 @@ fn line(buffer: &Buffer, y: u16) -> String {
 }
 
 #[test]
+fn historical_title_and_footer_replace_worktree_status_and_shortcuts() -> AppResult<()> {
+    // Given: a selected historical change with its own navigation hints.
+    let mut state = state_with("main.rs", 1);
+    prepare(&mut state, 120, 20)?;
+    let mut terminal = Terminal::new(TestBackend::new(120, 20))?;
+    // When: drawing the shared viewer with a commit title.
+    terminal.draw(|frame| {
+        draw_in(
+            frame,
+            &state,
+            &Config::default(),
+            StatusLabel::Title {
+                text: "abc123 · CHANGES · initial",
+                footer: " esc history · v timecapsule · q quit",
+            },
+            &mut Interaction::default(),
+            0,
+            frame.area(),
+        );
+    })?;
+    // Then: the historical status and footer occupy their own rows without worktree shortcuts.
+    let buffer = terminal.backend().buffer();
+    assert!(line(buffer, 18).contains("abc123 · CHANGES · initial"));
+    let footer = line(buffer, 19);
+    assert!(footer.contains("esc history · v timecapsule · q quit"));
+    assert!(!footer.contains("/ search"));
+    assert!(!footer.contains("sidebar"));
+    Ok(())
+}
+
+#[test]
 fn main_panes_have_only_a_shared_divider_joined_to_the_status_rule() -> AppResult<()> {
     // Given
     let mut state = state_with("main.rs", 1);

@@ -318,7 +318,8 @@ mod tests {
     use crate::{AppResult, git::Mode, ui::fixtures::Fixture};
 
     #[test]
-    fn history_is_pinned_and_pages_without_repeating_commits() -> AppResult<()> {
+    fn history_is_pinned_after_head_advances_and_pages_without_repeating_commits() -> AppResult<()>
+    {
         // Given: a branch with two commits.
         let fixture = Fixture::new("")?;
         fixture.write("tracked.txt", "second\n")?;
@@ -327,11 +328,15 @@ mod tests {
         let repo = fixture.repo()?;
         let (tip, branch) = repo.history_head()?;
         let tip = tip.ok_or("Missing branch tip")?;
-        // When: requesting successive pages from that fixed tip.
+        // When: the branch advances before requesting successive pages from the fixed tip.
+        fixture.write("tracked.txt", "third\n")?;
+        fixture.git(&["add", "tracked.txt"])?;
+        fixture.git(&["commit", "-m", "third"])?;
         let first = repo.history_page(&tip, 0, 1, "")?;
         let second = repo.history_page(&tip, 1, 1, "")?;
-        // Then: the pages are disjoint and preserve the branch identity.
+        // Then: neither page includes the new commit, and the pinned pages are disjoint.
         assert_eq!(branch, "main");
+        assert_ne!(Some(tip), repo.history_head()?.0);
         assert_eq!(first.commits[0].subject(), "second");
         assert_eq!(second.commits[0].subject(), "initial");
         assert!(first.more);

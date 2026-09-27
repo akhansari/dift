@@ -4,6 +4,10 @@ fn text(buffer: &Buffer) -> String {
     buffer.content.iter().map(|cell| cell.symbol()).collect()
 }
 
+fn row_with(buffer: &Buffer, fragment: &str) -> Option<u16> {
+    (0..buffer.area.height).find(|&y| line(buffer, y).contains(fragment))
+}
+
 #[test]
 fn commit_dialog_shows_only_message_fields_and_controls() -> AppResult<()> {
     // Given
@@ -34,7 +38,18 @@ fn commit_notice_replaces_bindings_in_the_footer() -> AppResult<()> {
     // When
     let buffer = render(&state, &Config::default(), 80, 24)?;
     // Then
-    assert!(text(&buffer).contains("Enter a commit subject"));
+    let row = row_with(&buffer, "Enter a commit subject").ok_or("Missing commit notice")?;
+    let x = line(&buffer, row)
+        .find("Enter a commit subject")
+        .ok_or("Missing commit notice position")? as u16;
+    assert_eq!(buffer[(x, row)].fg, Palette::new(false).removed_emphasis);
+    assert_eq!(
+        line(&buffer, row + 1)
+            .chars()
+            .filter(|&ch| ch == '└')
+            .count(),
+        1
+    );
     assert!(!text(&buffer).contains("ctrl-s"));
     Ok(())
 }
@@ -48,7 +63,18 @@ fn running_commit_replaces_bindings_in_the_footer() -> AppResult<()> {
     // When
     let buffer = render(&state, &Config::default(), 80, 24)?;
     // Then
-    assert!(text(&buffer).contains("Committing…"));
+    let row = row_with(&buffer, "Committing…").ok_or("Missing commit progress")?;
+    let x = line(&buffer, row)
+        .find("Committing…")
+        .ok_or("Missing commit progress position")? as u16;
+    assert_eq!(buffer[(x, row)].fg, Palette::new(false).accent);
+    assert_eq!(
+        line(&buffer, row + 1)
+            .chars()
+            .filter(|&ch| ch == '└')
+            .count(),
+        1
+    );
     assert!(!text(&buffer).contains("ctrl-s"));
     Ok(())
 }
@@ -61,7 +87,10 @@ fn narrow_commit_footer_clips_bindings_to_one_row() -> AppResult<()> {
     // When
     let buffer = render(&state, &Config::default(), 40, 14)?;
     // Then
-    assert!(text(&buffer).contains("ctrl-s commit · tab switch"));
+    let row = row_with(&buffer, "ctrl-s commit · tab switch").ok_or("Missing clipped footer")?;
+    assert_eq!(row_with(&buffer, "ctrl-s"), Some(row));
+    assert_eq!(line(&buffer, row + 1).chars().filter(|&ch| ch == '└').count(), 1);
+    assert!(!line(&buffer, row + 1).contains("esc close"));
     Ok(())
 }
 
