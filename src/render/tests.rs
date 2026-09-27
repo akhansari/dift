@@ -58,6 +58,17 @@ fn text_snapshot(text: &str) -> Snapshot {
     snapshot
 }
 
+fn full_file_snapshot() -> Snapshot {
+    let mut snapshot = text_snapshot("let after = 2;");
+    let change = &mut snapshot.changes[0];
+    change.category = Category::Comparison;
+    change.status = ' ';
+    change.hunks[0].header = "Contents at commit".into();
+    change.hunks[0].lines[0].kind = LineKind::Context;
+    change.old_source = None;
+    snapshot
+}
+
 fn source_content(document: &Document) -> String {
     document
         .rows
@@ -97,6 +108,7 @@ fn two_file_spec(snapshot: &Snapshot) -> RenderSpec<'_> {
         selected: &[0, 1],
         width: 100,
         split: false,
+        presentation: crate::model::Presentation::Changes,
         show_line_numbers: true,
         query: "needle",
         preview_rows: 0,
@@ -623,6 +635,7 @@ fn the_first_preview_arrives_before_any_syntax_is_parsed() -> crate::AppResult<(
             selected: &[0],
             width: 100,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "value",
             preview_rows: 16,
@@ -658,6 +671,7 @@ fn an_obsolete_request_publishes_nothing() -> crate::AppResult<()> {
             selected: &[0],
             width: 100,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "",
             preview_rows: 16,
@@ -690,6 +704,7 @@ fn changing_selection_after_the_preview_cancels_enrichment() -> crate::AppResult
             selected: &[0],
             width: 100,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "",
             preview_rows: 16,
@@ -755,6 +770,7 @@ fn the_full_basic_preview_includes_matches_beyond_the_initial_viewport() -> crat
             selected: &[0],
             width: 24,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "needle",
             preview_rows: 16,
@@ -841,6 +857,7 @@ fn a_zero_refinement_budget_still_preserves_both_sides_of_the_diff() -> crate::A
             selected: &[0],
             width: 80,
             split: true,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "",
             preview_rows: 0,

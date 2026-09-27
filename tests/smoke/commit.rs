@@ -325,7 +325,7 @@ fn missing_git_shows_a_spawn_error_and_restores_the_draft() -> Result {
     assert!(session.screen.contains("Cannot run git commit"));
     session.send("\r")?;
     session.wait(" Commit ")?;
-    assert!(session.screen.contains("Spawn failure draft"));
+    session.wait("Spawn failure draft")?;
     close_dialog(&mut session)?;
     session.quit()
 }

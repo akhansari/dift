@@ -1,8 +1,11 @@
 mod process;
 
-use super::terminal::{self, TerminalError};
+use super::{
+    modal,
+    terminal::{self, TerminalError},
+};
 use crate::{
-    input::Editor,
+    input::{Editor, fixed_key_label},
     render::Palette,
     state::{CommitField, State},
 };
@@ -10,14 +13,14 @@ use process::Process;
 use ratatui::{
     DefaultTerminal, Frame,
     crossterm::{
-        event::{self, KeyCode, KeyEventKind},
+        event::{self, KeyCode, KeyEventKind, KeyModifiers},
         execute,
         style::{Attribute, ResetColor, SetAttribute},
         terminal::{LeaveAlternateScreen, enable_raw_mode, size},
     },
     layout::{Constraint, Layout, Rect},
     text::Line,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{
     io::{self, Write},
@@ -161,42 +164,53 @@ pub(super) fn draw(frame: &mut Frame, state: &State, palette: &Palette) {
         return;
     };
     let area = frame.area();
-    let width = area.width.saturating_sub(2).min(78);
-    let height = area.height.saturating_sub(2).min(20);
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
+    let controls = format!(
+        "{} commit · {} switch field · {} close",
+        fixed_key_label(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        fixed_key_label(KeyCode::Tab, KeyModifiers::NONE),
+        fixed_key_label(KeyCode::Esc, KeyModifiers::NONE),
     );
+    let width = [
+        modal::widest(dialog.subject.text()) + 2,
+        modal::widest(dialog.body.editor().text()) + 2,
+        controls.width(),
+        " Body (optional) ".width(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
     let style = palette.base().bg(palette.panel);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Commit ")
-        .style(style)
-        .border_style(style.fg(palette.accent));
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+    let footer = if dialog.running() {
+        Line::styled("Committing…", style.fg(palette.accent))
+    } else if let Some(notice) = &dialog.notice {
+        Line::styled(
+            notice.escape_debug().to_string(),
+            style.fg(palette.removed_emphasis),
+        )
+    } else {
+        modal::hint(controls, palette)
+    };
+    let height = 5 + dialog.body.editor().text().split('\n').count().max(1);
+    let modal = modal::Modal::commit(area, width, height, vec![footer]);
+    let inner = modal.draw(frame, " Commit ", palette);
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT || inner.height < 6 {
+        let message = if dialog.running() {
+            "Committing…".to_owned()
+        } else {
+            format!(
+                "Enlarge terminal.\n{} closes.",
+                fixed_key_label(KeyCode::Esc, KeyModifiers::NONE)
+            )
+        };
         frame.render_widget(
-            Paragraph::new(if dialog.running() {
-                "Committing…"
-            } else {
-                "Enlarge terminal to compose a commit. Esc closes."
-            })
-            .wrap(Wrap { trim: false })
-            .style(style),
+            Paragraph::new(message)
+                .wrap(Wrap { trim: false })
+                .style(style),
             inner,
         );
         return;
     }
-    let rows = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(3),
-        Constraint::Length(1),
-    ])
-    .split(inner);
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).split(inner);
     field(
         frame,
         rows[0],
@@ -212,26 +226,6 @@ pub(super) fn draw(frame: &mut Frame, state: &State, palette: &Palette) {
         dialog.body.editor(),
         !dialog.running() && dialog.field == CommitField::Body,
         palette,
-    );
-    if dialog.running() {
-        frame.render_widget(
-            Paragraph::new("Committing…").style(style.fg(palette.accent)),
-            rows[2],
-        );
-        return;
-    }
-    if let Some(notice) = &dialog.notice {
-        frame.render_widget(
-            Paragraph::new(notice.escape_debug().to_string())
-                .style(style.fg(palette.removed_emphasis)),
-            rows[2],
-        );
-        return;
-    }
-    frame.render_widget(
-        Paragraph::new("ctrl-s commit · tab switch field · esc close")
-            .style(style.fg(palette.muted)),
-        rows[2],
     );
 }
 

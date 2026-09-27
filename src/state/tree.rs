@@ -124,10 +124,16 @@ pub(super) struct TreeIndex {
     all: Vec<TreeRow>,
     visible: Vec<TreeRow>,
     eligible: BTreeSet<usize>,
+    show_root: bool,
 }
 
 impl TreeIndex {
-    pub(super) fn new(snapshot: &Snapshot, filter: &str, collapsed: &BTreeSet<PathBuf>) -> Self {
+    pub(super) fn new(
+        snapshot: &Snapshot,
+        filter: &str,
+        collapsed: &BTreeSet<PathBuf>,
+        show_root: bool,
+    ) -> Self {
         let mut tree = Self {
             nodes: vec![Node::new(Path::new(""), None)],
             by_path: BTreeMap::from([(PathBuf::new(), 0)]),
@@ -135,6 +141,7 @@ impl TreeIndex {
             all: Vec::new(),
             visible: Vec::new(),
             eligible: (0..snapshot.changes.len()).collect(),
+            show_root,
         };
         for (index, change) in snapshot.changes.iter().enumerate() {
             let id = tree.insert_path(&change.path);
@@ -257,15 +264,17 @@ impl TreeIndex {
                 id = child;
             }
             let node = &self.nodes[id];
-            self.all.push(TreeRow {
-                path: node.path.clone(),
-                directory: directories[id],
-                depth,
-                badges: node.badges.clone(),
-                name,
-                count: counts[id],
-                match_indices,
-            });
+            if id != 0 || self.show_root {
+                self.all.push(TreeRow {
+                    path: node.path.clone(),
+                    directory: directories[id],
+                    depth,
+                    badges: node.badges.clone(),
+                    name,
+                    count: counts[id],
+                    match_indices,
+                });
+            }
             let mut children: Vec<_> = node
                 .children
                 .iter()
@@ -280,7 +289,12 @@ impl TreeIndex {
                         .cmp(&self.nodes[*b].path.file_name())
                 })
             });
-            pending.extend(children.into_iter().rev().map(|child| (child, depth + 1)));
+            pending.extend(
+                children
+                    .into_iter()
+                    .rev()
+                    .map(|child| (child, depth + usize::from(id != 0 || self.show_root))),
+            );
         }
         self.reveal(collapsed);
     }

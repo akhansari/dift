@@ -31,6 +31,7 @@ pub(super) enum Update {
 
 enum Request {
     Collect(CollectionRequest),
+    Mode(Mode, CollectionRequest),
     Toggle(StageTarget, CollectionRequest),
     PrepareDiscard(StageTarget),
     Discard(Arc<DiscardPreview>, CollectionRequest),
@@ -106,6 +107,12 @@ impl Worker {
     pub(super) fn request(&self, request: CollectionRequest) -> Result<(), io::Error> {
         self.requests
             .send(Request::Collect(request))
+            .map_err(|_| io::Error::other("Git worker stopped"))
+    }
+
+    pub(super) fn mode(&self, mode: Mode, request: CollectionRequest) -> io::Result<()> {
+        self.requests
+            .send(Request::Mode(mode, request))
             .map_err(|_| io::Error::other("Git worker stopped"))
     }
 }

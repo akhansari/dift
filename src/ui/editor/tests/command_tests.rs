@@ -91,6 +91,60 @@ fn vscode_preserves_wait_and_receives_a_goto_destination() -> AppResult<()> {
 }
 
 #[test]
+fn historical_vscode_waits_before_the_argument_delimiter() -> AppResult<()> {
+    // Given: a historical file opened through a literal VS Code command.
+    let fixture = Fixture::new("")?;
+    let target = EditorTarget {
+        path: Path::new("tracked.txt"),
+        line: None,
+    };
+    // When: preparing the temporary copy for editing.
+    let prepared = EditorCommand::prepare_with_wait(
+        &fixture.root,
+        Some(target),
+        Some("CODE.EXE --reuse-window --".into()),
+        None,
+        true,
+    )?;
+    // Then: the editor keeps the temporary file alive until it closes.
+    assert_eq!(
+        prepared.command.get_args().collect::<Vec<_>>(),
+        [
+            OsStr::new("--reuse-window"),
+            OsStr::new("--wait"),
+            OsStr::new("--"),
+            fixture.root.join("tracked.txt").as_os_str(),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn historical_vscode_positions_and_waits_before_the_argument_delimiter() -> AppResult<()> {
+    // Given: a historical file with a source position.
+    let fixture = Fixture::new("")?;
+    let target = EditorTarget {
+        path: Path::new("tracked.txt"),
+        line: Some(9),
+    };
+    let destination = format!("{}:9:1", fixture.root.join("tracked.txt").display());
+    // When: preparing its editor command.
+    let prepared = EditorCommand::prepare_with_wait(
+        &fixture.root,
+        Some(target),
+        Some("code --reuse-window --".into()),
+        None,
+        true,
+    )?;
+    // Then: both options are interpreted as options, not file names.
+    assert_eq!(
+        prepared.command.get_args().collect::<Vec<_>>(),
+        ["--reuse-window", "--goto", "--wait", "--", &destination]
+    );
+    Ok(())
+}
+
+#[test]
 fn normal_open_does_not_position_a_supported_editor() -> AppResult<()> {
     // Given
     let fixture = Fixture::new("")?;

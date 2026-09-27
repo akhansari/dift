@@ -146,6 +146,19 @@ fn no_totals_are_shown_before_a_snapshot_is_collected() -> AppResult<()> {
 }
 
 #[test]
+fn full_file_view_hides_tracked_counts_and_the_ratio_bar() -> AppResult<()> {
+    // Given: a historical full-file view with stale diff totals.
+    let mut state = counted_state(1_813, 17);
+    state.set_presentation(crate::model::Presentation::Files);
+    // When: rendering its status line.
+    let buffer = render(&state, &Config::default(), 80, 10)?;
+    // Then: neither the tracked counts nor the ratio bar appears.
+    assert!(!line(&buffer, 8).contains("Tracked"));
+    assert!(!line(&buffer, 8).contains('■'));
+    Ok(())
+}
+
+#[test]
 fn selection_filter_and_search_do_not_change_repo_totals() -> AppResult<()> {
     // Given
     let mut state = counted_state(1_813, 17);

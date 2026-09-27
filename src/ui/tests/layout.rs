@@ -85,6 +85,7 @@ fn prepare(state: &mut State, width: u16, height: u16) -> AppResult<()> {
             selected: &request.selected,
             width: request.width,
             split: request.split,
+            presentation: request.presentation,
             show_line_numbers: request.show_line_numbers,
             query: &request.query,
             preview_rows: 0,
@@ -658,21 +659,39 @@ fn minimum_terminal_size_keeps_content_the_status_rule_and_input_on_separate_row
 }
 
 #[test]
-fn help_shows_a_scrollbar_in_a_centered_eighty_percent_height_popup() -> AppResult<()> {
+fn help_uses_the_available_height_and_keeps_its_scrollbar_above_the_footer() -> AppResult<()> {
     // Given
     let mut state = state_with("main.rs", 1);
     state.action(Action::Help, 8, Instant::now());
     // When
     let buffer = render(&state, &Config::default(), 120, 20)?;
     // Then
-    assert_eq!(buffer[(21, 2)].symbol(), "┌");
-    assert_eq!(buffer[(98, 2)].symbol(), "┐");
-    assert_eq!(buffer[(21, 17)].symbol(), "└");
-    assert_eq!(buffer[(98, 17)].symbol(), "┘");
-    assert!(line(&buffer, 2).contains(concat!("Dift ", env!("CARGO_PKG_VERSION"))));
-    assert_eq!(buffer[(97, 3)].symbol(), "┃");
-    assert_eq!(buffer[(97, 3)].fg, Palette::new(false).accent);
-    assert_eq!(buffer[(97, 16)].symbol(), " ");
+    let rect = super::help::Help::new(
+        Rect::new(0, 0, 120, 20),
+        &Config::default().bindings,
+        &Palette::new(false),
+    )
+    .rect();
+    assert_eq!(rect.width, 60);
+    assert_eq!(rect.height, 20);
+    assert_eq!(buffer[(rect.x, rect.y)].symbol(), "┌");
+    assert_eq!(buffer[(rect.right() - 1, rect.y)].symbol(), "┐");
+    assert_eq!(buffer[(rect.x, rect.bottom() - 1)].symbol(), "└");
+    assert_eq!(buffer[(rect.right() - 1, rect.bottom() - 1)].symbol(), "┘");
+    assert!(line(&buffer, rect.y).contains(concat!("Dift ", env!("CARGO_PKG_VERSION"))));
+    assert_eq!(buffer[(rect.x + 2, rect.y + 1)].symbol(), " ");
+    assert_eq!(buffer[(rect.right() - 2, rect.y + 2)].symbol(), "┃");
+    assert_eq!(
+        buffer[(rect.right() - 2, rect.y + 2)].fg,
+        Palette::new(false).accent
+    );
+    assert_eq!(buffer[(rect.right() - 3, rect.y + 2)].symbol(), " ");
+    assert_eq!(buffer[(rect.x + 2, rect.bottom() - 3)].symbol(), " ");
+    assert_eq!(buffer[(rect.right() - 2, rect.bottom() - 2)].symbol(), " ");
+    assert!(
+        line(&buffer, rect.bottom() - 2)
+            .contains("down|j/up|k scroll · pgDn/pgUp page · esc close")
+    );
     Ok(())
 }
 
@@ -776,7 +795,7 @@ fn help_hides_the_active_toast() -> AppResult<()> {
     // Then
     assert_eq!(buffer[(119, 6)].symbol(), " ");
     assert!(!line(&buffer, 7).contains("Whitespace:"));
-    assert!(line(&buffer, 1).contains(concat!("Dift ", env!("CARGO_PKG_VERSION"))));
+    assert!(line(&buffer, 0).contains(concat!("Dift ", env!("CARGO_PKG_VERSION"))));
     Ok(())
 }
 
@@ -805,10 +824,7 @@ fn narrow_help_wraps_descriptions_below_the_keys() -> AppResult<()> {
     let buffer = render(&state, &Config::default(), 32, 30)?;
     // Then
     let rows: Vec<_> = (0..30).map(|y| line(&buffer, y)).collect();
-    assert!(
-        rows.iter()
-            .any(|row| row.contains("  Show or hide the file"))
-    );
+    assert!(rows.iter().any(|row| row.contains("  Show or hide the")));
     assert!(rows.iter().any(|row| row.contains("  tree")));
     Ok(())
 }

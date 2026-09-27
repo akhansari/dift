@@ -48,6 +48,57 @@ fn state_with_statuses(files: &[(&str, Category, char)]) -> State {
     state
 }
 
+fn historical_files_state() -> State {
+    let mut state = State::new(false);
+    state.set_presentation(crate::model::Presentation::Files);
+    state.update_snapshot(Snapshot {
+        changes: ["README.md", "src/a.rs", "src/b.rs"]
+            .into_iter()
+            .map(|path| Change {
+                path: path.into(),
+                old_path: None,
+                category: Category::Comparison,
+                status: ' ',
+                hunks: Vec::new(),
+                summary: None,
+                oversized: false,
+                old_source: None,
+                new_source: None,
+            })
+            .collect(),
+        ..Snapshot::default()
+    });
+    state
+}
+
+#[test]
+fn historical_files_tree_starts_at_top_level_without_counts() -> crate::AppResult<()> {
+    // Given: a complete historical tree with three files.
+    let state = historical_files_state();
+    // When: rendering its initial tree.
+    let buffer = render(&state, &Config::default(), 34, 8)?;
+    // Then: the first top-level folder has no parent row or count.
+    assert!(line(&buffer, 0).contains("▸ src"));
+    assert!(line(&buffer, 1).contains("README.md"));
+    assert!(!line(&buffer, 0).contains("All changes"));
+    assert!(!line(&buffer, 0).chars().any(|char| char.is_ascii_digit()));
+    Ok(())
+}
+
+#[test]
+fn empty_historical_files_tree_explains_there_are_no_files() -> crate::AppResult<()> {
+    // Given: an empty historical snapshot.
+    let mut state = State::new(false);
+    state.set_presentation(crate::model::Presentation::Files);
+    state.update_snapshot(Snapshot::default());
+    // When: rendering the file tree.
+    let buffer = render(&state, &Config::default(), 34, 8)?;
+    // Then: there is no synthetic root row or changes-only empty message.
+    assert!(line(&buffer, 0).contains("No files"));
+    assert!(!line(&buffer, 0).contains("All changes"));
+    Ok(())
+}
+
 fn sample() -> State {
     state_with(&[
         ("src/state.rs", Category::Unstaged),

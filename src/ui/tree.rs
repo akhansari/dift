@@ -249,11 +249,15 @@ pub(super) fn draw(
             }
         }
     }
-    if count == 0 && inner.height > 1 {
+    if count == 0 && inner.height > u16::from(!state.presentation().is_files()) {
         frame.render_widget(
             Paragraph::new(
                 if state.filter().is_empty() && !state.change_filter().restricted() {
-                    "No changes"
+                    if state.presentation().is_files() {
+                        "No files"
+                    } else {
+                        "No changes"
+                    }
                 } else {
                     "No matching files"
                 },
@@ -261,7 +265,7 @@ pub(super) fn draw(
             .style(palette.base().fg(palette.muted)),
             Rect {
                 x: inner.x + 1,
-                y: inner.y + 1,
+                y: inner.y + u16::from(!state.presentation().is_files()),
                 width: inner.width.saturating_sub(1),
                 height: 1,
             },
@@ -313,7 +317,7 @@ struct RowLayout {
 
 impl RowLayout {
     fn new(row: &TreeRow, width: usize, state: &State, config: &Config) -> Self {
-        let count = row.directory.then(|| {
+        let count = (row.directory && !state.presentation().is_files()).then(|| {
             if row.depth == 0 && !state.filter().is_empty() {
                 format!("{}/{}", row.count, state.visible_files())
             } else {

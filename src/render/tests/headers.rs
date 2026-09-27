@@ -1,5 +1,53 @@
 use super::*;
 
+fn historical_files(snapshot: &Snapshot, selected: &[usize]) -> crate::AppResult<Arc<Document>> {
+    let mut renderer = Renderer::new(Config::default())?;
+    let mut document = Arc::new(Document::default());
+    renderer.render_progressive(
+        RenderSpec {
+            snapshot,
+            selected,
+            width: 80,
+            split: false,
+            presentation: crate::model::Presentation::Files,
+            show_line_numbers: true,
+            query: "",
+            preview_rows: 0,
+        },
+        &Cancellation::default(),
+        |update| {
+            document = update.document;
+            true
+        },
+    )?;
+    Ok(document)
+}
+
+#[test]
+fn historical_files_heading_describes_contents_not_changes() -> crate::AppResult<()> {
+    // Given: a selected file from a historical commit.
+    let snapshot = full_file_snapshot();
+    // When: rendering the Files view.
+    let document = historical_files(&snapshot, &[0])?;
+    // Then: the category heading describes file contents.
+    assert_eq!(document.rows[0].line.to_string(), " TIMECAPSULE ");
+    Ok(())
+}
+
+#[test]
+fn empty_historical_files_preview_prompts_for_a_file() -> crate::AppResult<()> {
+    // Given: no historical file is selected.
+    let snapshot = Snapshot::default();
+    // When: rendering the Files view.
+    let document = historical_files(&snapshot, &[])?;
+    // Then: the empty-state message refers to files, not changes.
+    assert_eq!(
+        document.rows[0].line.to_string(),
+        " Select a file to view its contents"
+    );
+    Ok(())
+}
+
 macro_rules! status_test {
     ($name:ident, $status:literal, $label:literal) => {
         #[test]
@@ -54,6 +102,48 @@ status_test!(
     'X',
     "Changed (X) · Unstaged"
 );
+
+#[test]
+fn full_file_header_keeps_the_name_without_diff_metadata() -> crate::AppResult<()> {
+    // Given: a full file from history, rather than a diff.
+    let snapshot = full_file_snapshot();
+    // When: rendering its file header.
+    let document = historical_files(&snapshot, &[0])?;
+    // Then: the filename remains without a status, category, or change counts.
+    assert_eq!(document.rows[1].line.to_string().trim(), "main.rs");
+    Ok(())
+}
+
+#[test]
+fn switching_presentation_does_not_reuse_a_diff_header() -> crate::AppResult<()> {
+    // Given: the same selected file has already been rendered as a diff.
+    let mut renderer = Renderer::new(Config::default())?;
+    let snapshot = full_file_snapshot();
+    let changes = renderer.document(&snapshot, &[0], 80, false, "")?;
+    assert!(changes.rows[1].line.to_string().contains("Changes"));
+    // When: rendering it as a complete file on that renderer.
+    let mut files = Arc::new(Document::default());
+    renderer.render_progressive(
+        RenderSpec {
+            snapshot: &snapshot,
+            selected: &[0],
+            width: 80,
+            split: false,
+            presentation: crate::model::Presentation::Files,
+            show_line_numbers: true,
+            query: "",
+            preview_rows: 0,
+        },
+        &Cancellation::default(),
+        |update| {
+            files = update.document;
+            true
+        },
+    )?;
+    // Then: cached diff metadata cannot leak into the file header.
+    assert_eq!(files.rows[1].line.to_string().trim(), "main.rs");
+    Ok(())
+}
 
 #[test]
 fn header_counts_measure_source_lines_instead_of_wrapped_rows() -> crate::AppResult<()> {
@@ -211,6 +301,7 @@ fn a_preview_ending_before_a_file_header_has_no_current_file() -> crate::AppResu
             selected: &[0],
             width: 80,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "",
             preview_rows: 1,
@@ -243,6 +334,7 @@ fn a_partial_file_header_does_not_extend_past_the_preview() -> crate::AppResult<
             selected: &[0],
             width: 80,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "",
             preview_rows: 4,

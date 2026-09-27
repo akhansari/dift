@@ -21,7 +21,12 @@ use toast::Toast;
 use tree::TreeIndex;
 pub use tree::{TreeBadge, TreeRow};
 
-use crate::{config::Whitespace, input::Scope, model::Snapshot, render::Document};
+use crate::{
+    config::Whitespace,
+    input::Scope,
+    model::{Presentation, Snapshot},
+    render::Document,
+};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -36,6 +41,46 @@ pub struct EditorTarget<'a> {
 }
 
 /// Repository data and interactive state for the terminal UI.
+#[derive(Default)]
+struct TreeViews {
+    presentation: Presentation,
+    changes: BTreeSet<PathBuf>,
+    files: BTreeSet<PathBuf>,
+    files_initialized: bool,
+    changes_unfiltered: Option<BTreeSet<PathBuf>>,
+    files_unfiltered: Option<BTreeSet<PathBuf>>,
+}
+
+impl TreeViews {
+    fn collapsed(&self) -> &BTreeSet<PathBuf> {
+        match self.presentation {
+            Presentation::Changes => &self.changes,
+            Presentation::Files => &self.files,
+        }
+    }
+
+    fn collapsed_mut(&mut self) -> &mut BTreeSet<PathBuf> {
+        match self.presentation {
+            Presentation::Changes => &mut self.changes,
+            Presentation::Files => &mut self.files,
+        }
+    }
+
+    fn unfiltered(&self) -> &Option<BTreeSet<PathBuf>> {
+        match self.presentation {
+            Presentation::Changes => &self.changes_unfiltered,
+            Presentation::Files => &self.files_unfiltered,
+        }
+    }
+
+    fn unfiltered_mut(&mut self) -> &mut Option<BTreeSet<PathBuf>> {
+        match self.presentation {
+            Presentation::Changes => &mut self.changes_unfiltered,
+            Presentation::Files => &mut self.files_unfiltered,
+        }
+    }
+}
+
 pub struct State {
     activity: activity::ActivityState,
     collection: CollectionState,
@@ -48,10 +93,7 @@ pub struct State {
     snapshot: Arc<Snapshot>,
     /// Selected file or directory; an empty path selects the root.
     selection: PathBuf,
-    /// Directories whose children are hidden in the tree.
-    collapsed: BTreeSet<PathBuf>,
-    /// Normal tree collapse state saved while a nonempty filter is active.
-    unfiltered_collapsed: Option<BTreeSet<PathBuf>>,
+    views: TreeViews,
     /// Applied fuzzy query used to filter file paths; draft text lives in the prompt.
     filter: String,
     change_filter: filters::ChangeFilter,
@@ -80,7 +122,8 @@ impl State {
         &self.selection
     }
     pub fn is_collapsed(&self, path: &Path) -> bool {
-        path.ancestors().any(|path| self.collapsed.contains(path))
+        path.ancestors()
+            .any(|path| self.views.collapsed().contains(path))
     }
     pub fn filter(&self) -> &str {
         &self.filter
@@ -142,6 +185,22 @@ impl State {
             .then(|| {
                 self.document()
                     .visible_hunk_line(path, self.scroll(), height)
+                    .or_else(|| {
+                        self.views
+                            .presentation
+                            .is_files()
+                            .then(|| {
+                                self.document()
+                                    .rows
+                                    .iter()
+                                    .skip(self.scroll())
+                                    .take(height)
+                                    .flat_map(|row| &row.anchors)
+                                    .find(|anchor| anchor.path.as_path() == path && !anchor.old)
+                                    .map(|anchor| anchor.number)
+                            })
+                            .flatten()
+                    })
             })
             .flatten();
         Some(EditorTarget { path, line })
@@ -207,8 +266,8 @@ impl State {
 
     pub fn with_whitespace(split: bool, whitespace: Whitespace) -> Self {
         let snapshot = Arc::new(Snapshot::default());
-        let collapsed = BTreeSet::new();
-        let tree = TreeIndex::new(&snapshot, "", &collapsed);
+        let views = TreeViews::default();
+        let tree = TreeIndex::new(&snapshot, "", views.collapsed(), true);
         Self {
             activity: activity::ActivityState::default(),
             diff: DiffState::new(split),
@@ -219,8 +278,7 @@ impl State {
             help_max_scroll: 0,
             snapshot,
             selection: PathBuf::new(),
-            collapsed,
-            unfiltered_collapsed: None,
+            views,
             filter: String::new(),
             change_filter: filters::ChangeFilter::default(),
             filter_menu: None,
@@ -243,11 +301,37 @@ impl State {
             .map(|change| &change.path)
             .collect::<BTreeSet<_>>()
             .len();
-        self.tree = TreeIndex::new(&snapshot, &self.filter, &self.collapsed);
         self.snapshot = Arc::new(snapshot);
+        self.rebuild_tree();
+    }
+
+    fn rebuild_tree(&mut self) {
+        if self.views.presentation.is_files()
+            && !self.views.files_initialized
+            && !self.snapshot.changes.is_empty()
+        {
+            self.views.files = self
+                .snapshot
+                .changes
+                .iter()
+                .flat_map(|change| change.path.ancestors().skip(1))
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+                .collect();
+            self.views.files_initialized = true;
+            if self.views.files_unfiltered.is_some() {
+                self.views.files_unfiltered = Some(self.views.files.clone());
+            }
+        }
+        self.tree = TreeIndex::new(
+            &self.snapshot,
+            &self.filter,
+            self.views.collapsed(),
+            !self.views.presentation.is_files(),
+        );
         self.tree
             .filter_changes(&self.snapshot, &self.change_filter);
-        self.tree.refilter(&self.filter, &self.collapsed);
+        self.tree.refilter(&self.filter, self.views.collapsed());
         self.refresh_find_matches();
         self.reconcile_selection();
     }
@@ -269,7 +353,40 @@ impl State {
     }
 
     pub fn selected_changes(&self) -> Vec<usize> {
+        if self.views.presentation.is_files() {
+            return self
+                .snapshot
+                .changes
+                .iter()
+                .enumerate()
+                .filter(|(_, change)| {
+                    change.path == self.selection && !self.selection.as_os_str().is_empty()
+                })
+                .map(|(index, _)| index)
+                .collect();
+        }
         self.tree.selected_changes(&self.selection)
+    }
+
+    /// Switch presentation and rebuild the tree against the snapshot in one step.
+    pub(crate) fn set_presentation(&mut self, presentation: Presentation) {
+        if self.views.presentation == presentation {
+            return;
+        }
+        self.views.presentation = presentation;
+        self.rebuild_tree();
+        self.refilter();
+    }
+
+    /// Change view and install its first snapshot without exposing the previous tree.
+    pub(crate) fn replace_presentation(&mut self, presentation: Presentation, snapshot: Snapshot) {
+        self.views.presentation = presentation;
+        self.update_snapshot(snapshot);
+        self.refilter();
+    }
+
+    pub(crate) fn presentation(&self) -> Presentation {
+        self.views.presentation
     }
 
     pub fn tree(&self, include_collapsed: bool) -> &[TreeRow] {
@@ -358,6 +475,167 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn historical_files_render_only_the_first_selected_file() {
+        // Given: a complete historical file tree.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[
+            ("a.rs", Category::Comparison),
+            ("b.rs", Category::Comparison),
+        ]));
+        // When: the first top-level file is selected automatically.
+        let selected = state.selected_changes();
+        // Then: only that file is rendered, not the whole repository.
+        assert_eq!(state.selection(), Path::new("a.rs"));
+        assert_eq!(selected, [0]);
+    }
+
+    #[test]
+    fn historical_files_selection_renders_only_the_selected_file() {
+        // Given: two files in a historical tree.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[
+            ("a.rs", Category::Comparison),
+            ("b.rs", Category::Comparison),
+        ]));
+        // When: moving to the next file.
+        state.action(Action::NextFile, 10, Instant::now());
+        // Then: the selected file is the sole render input.
+        assert_eq!(state.selection(), Path::new("b.rs"));
+        assert_eq!(state.selected_changes(), [1]);
+    }
+
+    #[test]
+    fn historical_files_choose_a_visible_file_when_the_selected_one_disappears() {
+        // Given: two top-level historical files, with the first selected.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[
+            ("a.rs", Category::Comparison),
+            ("b.rs", Category::Comparison),
+        ]));
+        // When: the selected path is no longer in the displayed tree.
+        state.update_snapshot(snapshot_with(&[("b.rs", Category::Comparison)]));
+        // Then: the remaining visible file is selected, not the hidden root.
+        assert_eq!(state.selection(), Path::new("b.rs"));
+        assert_eq!(paths(&state), [Path::new("b.rs")]);
+    }
+
+    #[test]
+    fn historical_files_filter_selects_a_visible_top_level_file() {
+        // Given: the second of two top-level files is selected.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[
+            ("a.rs", Category::Comparison),
+            ("b.rs", Category::Comparison),
+        ]));
+        state.action(Action::NextFile, 10, Instant::now());
+        // When: filtering the tree to the other file.
+        state.action(Action::Filter, 10, Instant::now());
+        state.paste("a.rs", Instant::now());
+        state.action(Action::Accept, 10, Instant::now());
+        // Then: the only visible path is selected without exposing the root.
+        assert_eq!(state.selection(), Path::new("a.rs"));
+        assert_eq!(paths(&state), [Path::new("a.rs")]);
+    }
+
+    #[test]
+    fn historical_files_show_top_level_items_without_a_root_row() {
+        // Given: a historical tree with a root file and nested folders.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        // When: the committed tree arrives.
+        state.update_snapshot(snapshot_with(&[
+            ("README.md", Category::Comparison),
+            ("src/a.rs", Category::Comparison),
+            ("src/nested/b.rs", Category::Comparison),
+        ]));
+        // Then: top-level entries start at depth zero, with folders collapsed.
+        assert_eq!(paths(&state), [Path::new("src"), Path::new("README.md")]);
+        assert_eq!(state.selection(), Path::new("src"));
+        assert!(state.tree(false).iter().all(|row| row.depth == 0));
+        assert!(state.is_collapsed(Path::new("src")));
+    }
+
+    #[test]
+    fn switching_presentation_rebuilds_the_current_tree_immediately() {
+        // Given: a working-tree snapshot with a nested file.
+        let mut state = state();
+        // When: displaying the current snapshot as committed files.
+        state.set_presentation(Presentation::Files);
+        // Then: the root disappears before a new collection is installed.
+        assert_eq!(state.tree(false)[0].path, Path::new("src"));
+        assert_eq!(state.tree(false)[0].depth, 0);
+    }
+
+    #[test]
+    fn expanding_a_historical_folder_reveals_its_immediate_children() {
+        // Given: a collapsed historical folder with a nested folder.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[
+            ("src/a.rs", Category::Comparison),
+            ("src/nested/b.rs", Category::Comparison),
+        ]));
+        state.action(Action::Down, 10, Instant::now());
+        // When: expanding the selected folder.
+        state.action(Action::Right, 10, Instant::now());
+        // Then: the direct file appears, but the nested folder remains collapsed.
+        assert!(paths(&state).contains(&Path::new("src/a.rs")));
+        assert!(paths(&state).contains(&Path::new("src/nested")));
+        assert!(!paths(&state).contains(&Path::new("src/nested/b.rs")));
+    }
+
+    #[test]
+    fn refreshing_historical_files_keeps_an_expanded_folder_open() {
+        // Given: a user-expanded folder in the historical file tree.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[("src/a.rs", Category::Comparison)]));
+        state.action(Action::Down, 10, Instant::now());
+        state.action(Action::Right, 10, Instant::now());
+        // When: the selected file is recollected.
+        state.update_snapshot(snapshot_with(&[("src/a.rs", Category::Comparison)]));
+        // Then: the folder remains expanded.
+        assert!(paths(&state).contains(&Path::new("src/a.rs")));
+    }
+
+    #[test]
+    fn returning_to_changes_restores_its_previous_collapse_state() {
+        // Given: a collapsed Changes folder and an opened Files view.
+        let mut state = state();
+        state.action(Action::Down, 10, Instant::now());
+        state.action(Action::Left, 10, Instant::now());
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[("src/a.rs", Category::Comparison)]));
+        // When: switching back to Changes.
+        state.set_presentation(Presentation::Changes);
+        state.update_snapshot(snapshot());
+        // Then: the earlier Changes collapse is intact.
+        assert!(state.is_collapsed(Path::new("src")));
+        assert!(!paths(&state).contains(&Path::new("src/a.rs")));
+    }
+
+    #[test]
+    fn reopening_historical_files_preserves_an_expanded_folder() {
+        // Given: Files with an expanded folder, after switching back to Changes.
+        let mut state = State::new(false);
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[("src/a.rs", Category::Comparison)]));
+        state.action(Action::Down, 10, Instant::now());
+        state.action(Action::Right, 10, Instant::now());
+        state.set_presentation(Presentation::Changes);
+        state.update_snapshot(snapshot_with(&[("src/a.rs", Category::Comparison)]));
+        // When: reopening the Files view.
+        state.set_presentation(Presentation::Files);
+        state.update_snapshot(snapshot_with(&[("src/a.rs", Category::Comparison)]));
+        // Then: the user's expansion remains in effect.
+        assert!(paths(&state).contains(&Path::new("src/a.rs")));
     }
 
     #[test]

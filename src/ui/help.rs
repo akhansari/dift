@@ -1,3 +1,4 @@
+use super::modal;
 use crate::{
     input::{Action, Bindings, Scope},
     render::Palette,
@@ -8,40 +9,48 @@ use ratatui::{
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The same wrapped rows and viewport drive drawing and input bounds.
 pub(super) struct Help {
-    pub(super) rect: Rect,
+    modal: modal::Modal,
     content: Rect,
     lines: Vec<Line<'static>>,
 }
 
 impl Help {
     pub(super) fn new(area: Rect, bindings: &Bindings, palette: &Palette) -> Self {
-        let width = area.width.saturating_sub(4).min(78);
-        let height = (u32::from(area.height) * 80 / 100) as u16;
-        let rect = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
-            width,
-            height,
+        let title = concat!(" Dift ", env!("CARGO_PKG_VERSION"), " Keybindings ");
+        let footer = modal::hint(
+            modal::scroll_hint(|action| bindings.labels(Scope::Global, action)),
+            palette,
         );
-        let inner = Block::default().borders(Borders::ALL).inner(rect);
-        let content = Rect {
-            width: inner.width.saturating_sub(1),
-            ..inner
-        };
-        let available = usize::from(content.width);
+        let width = bindings
+            .0
+            .iter()
+            .flat_map(|(scope, actions)| {
+                actions.keys().map(|action| {
+                    bindings.labels(*scope, *action).width() + 2 + description(*action).width()
+                })
+            })
+            .max()
+            .unwrap_or(0)
+            .max("GENERAL · available in tree, diff and history".width())
+            .max(title.width())
+            .max(footer.width())
+            + 1;
+        let modal = modal::Modal::new(area, width, 0, Vec::new());
+        let inner = modal.inner();
+        let available = usize::from(inner.width.saturating_sub(1));
         let key_width = bindings
             .0
             .iter()
             .flat_map(|(scope, actions)| {
                 actions
                     .keys()
-                    .map(|action| bindings.keys(*scope, *action).width())
+                    .map(|action| bindings.labels(*scope, *action).width())
             })
             .max()
             .unwrap_or(0)
@@ -56,9 +65,10 @@ impl Help {
                 lines.push(Line::default());
             }
             let heading = match scope {
-                Scope::Global => "GENERAL · available in tree and diff",
+                Scope::Global => "GENERAL · available in tree, diff and history",
                 Scope::Tree => "FILE TREE",
                 Scope::Diff => "DIFF VIEW",
+                Scope::History => "COMMIT HISTORY AND DETAIL",
                 Scope::Input => "TEXT INPUT · filter, find and search",
             };
             lines.extend(wrap(heading, available).into_iter().map(|text| {
@@ -72,7 +82,7 @@ impl Help {
                 )
             }));
             for action in actions.keys() {
-                let keys = bindings.keys(scope, *action);
+                let keys = bindings.labels(scope, *action);
                 if available < 32 {
                     lines.extend(wrap(&keys, available).into_iter().map(|text| {
                         Line::styled(text, palette.base().bg(palette.panel).fg(palette.accent))
@@ -103,11 +113,21 @@ impl Help {
                 }
             }
         }
+        let modal = modal::Modal::new(area, width, lines.len(), vec![footer]);
+        let inner = modal.inner();
+        let content = Rect {
+            width: inner.width.saturating_sub(1),
+            ..inner
+        };
         Self {
-            rect,
+            modal,
             content,
             lines,
         }
+    }
+
+    pub(super) fn rect(&self) -> Rect {
+        self.modal.rect
     }
 
     pub(super) fn sync(&self, state: &mut State) {
@@ -115,17 +135,11 @@ impl Help {
     }
 
     pub(super) fn draw(self, frame: &mut Frame, offset: usize, palette: &Palette) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(concat!(
-                " Dift ",
-                env!("CARGO_PKG_VERSION"),
-                " Keybindings "
-            ))
-            .style(palette.base().bg(palette.panel))
-            .border_style(palette.base().bg(palette.panel).fg(palette.accent));
-        frame.render_widget(Clear, self.rect);
-        frame.render_widget(block, self.rect);
+        self.modal.draw(
+            frame,
+            concat!(" Dift ", env!("CARGO_PKG_VERSION"), " Keybindings "),
+            palette,
+        );
         let maximum = self
             .lines
             .len()
@@ -154,7 +168,8 @@ impl Help {
                     .track_style(palette.base().bg(palette.panel))
                     .thumb_style(palette.base().bg(palette.panel).fg(palette.accent)),
                 Rect {
-                    width: self.content.width + 1,
+                    x: self.modal.rect.right().saturating_sub(2),
+                    width: 1,
                     ..self.content
                 },
                 &mut state,
@@ -232,6 +247,12 @@ fn description(action: Action) -> &'static str {
         Action::Commit => "Commit staged changes",
         Action::OpenEditor => "Open editor at the visible change",
         Action::OpenEditorPlain => "Open editor without a line position",
+        Action::History => "Toggle commit history (Cancel returns from a commit)",
+        Action::MarkBase => "Mark or clear the comparison base",
+        Action::Compare => "Compare base with highlighted target",
+        Action::ToggleFiles => "Toggle commit changes / complete file tree",
+        Action::Swap => "Swap comparison base and target",
+        Action::CommitInfo => "Show full commit message and metadata",
         Action::CursorLeft => "Move cursor left",
         Action::CursorRight => "Move cursor right",
         Action::CursorHome => "Move cursor to the beginning",

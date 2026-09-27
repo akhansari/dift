@@ -133,7 +133,10 @@ fn cells(
         .max(5);
     let prefix = if !context.show_line_numbers {
         format!("{sign} ")
-    } else if unified && width >= 2 * digits + 10 {
+    } else if unified
+        && (source.kind != LineKind::Context || source.old.is_some())
+        && width >= 2 * digits + 10
+    {
         format!(
             "{:>digits$} {:>digits$} {sign} ",
             number_text(source.old),
@@ -470,7 +473,7 @@ pub(super) fn file(
         cancel,
     };
     document.rows.push(Arc::new(Row {
-        line: header::line(change, width, palette),
+        line: header::line(change, width, palette, spec.presentation),
         anchors: Vec::new(),
         code: Vec::new(),
     }));
@@ -491,7 +494,7 @@ pub(super) fn file(
             document.excluded += 1;
             let key = config
                 .bindings
-                .keys(crate::input::Scope::Global, crate::input::Action::Accept);
+                .labels(crate::input::Scope::Global, crate::input::Action::Accept);
             push_header(
                 &mut document,
                 &format!("    Select the file and press {key} to load."),

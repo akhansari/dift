@@ -10,6 +10,8 @@ mod discard;
 mod editor;
 #[path = "smoke/fixtures.rs"]
 mod fixtures;
+#[path = "smoke/history.rs"]
+mod history;
 #[path = "smoke/watch.rs"]
 mod watch;
 

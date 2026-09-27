@@ -1,5 +1,5 @@
 use super::terminal::{self, TerminalError};
-use crate::state::EditorTarget;
+use crate::{git::Repository, state::EditorTarget};
 use ratatui::DefaultTerminal;
 use std::{
     ffi::{OsStr, OsString},
@@ -34,6 +34,10 @@ pub(super) enum EditorError {
         variable: &'static str,
         status: ExitStatus,
     },
+    #[error("Cannot prepare historical editor copy: {0}")]
+    Temporary(#[from] io::Error),
+    #[error("Cannot read historical file: {0}")]
+    Historical(#[from] crate::git::GitError),
 }
 
 /// A validated target and editor command, prepared before handing over the terminal.
@@ -49,6 +53,16 @@ impl EditorCommand {
         visual: Option<OsString>,
         editor: Option<OsString>,
     ) -> Result<Self, EditorError> {
+        Self::prepare_with_wait(root, target, visual, editor, false)
+    }
+
+    fn prepare_with_wait(
+        root: &Path,
+        target: Option<EditorTarget<'_>>,
+        visual: Option<OsString>,
+        editor: Option<OsString>,
+        wait: bool,
+    ) -> Result<Self, EditorError> {
         let target = target.ok_or(EditorError::NoActiveFile)?;
         let path = root.join(target.path);
         let metadata = fs::metadata(&path).map_err(|source| EditorError::Inspect {
@@ -63,10 +77,8 @@ impl EditorCommand {
             .filter_map(|(name, value)| value.map(|value| (name, value)))
             .find(|(_, value)| !value.as_encoded_bytes().trim_ascii().is_empty())
             .ok_or(EditorError::NotConfigured)?;
-        let prepared = target
-            .line
-            .and_then(|line| positioned_command(&value, &path, line))
-            .unwrap_or_else(|| {
+        let prepared =
+            literal_editor_command(&value, &path, target.line, wait).unwrap_or_else(|| {
                 gix::command::prepare(value)
                     .command_may_be_shell_script()
                     .arg(path)
@@ -113,7 +125,12 @@ impl EditorCommand {
 }
 
 /// Only rewrite literal invocations of known editors; preserve shell commands verbatim.
-fn positioned_command(value: &OsStr, path: &Path, line: usize) -> Option<gix::command::Prepare> {
+fn literal_editor_command(
+    value: &OsStr,
+    path: &Path,
+    line: Option<usize>,
+    wait: bool,
+) -> Option<gix::command::Prepare> {
     let bytes = gix::path::os_str_into_bstr(value).ok()?;
     if !literal_command(bytes.as_ref()) {
         return None;
@@ -128,26 +145,83 @@ fn positioned_command(value: &OsStr, path: &Path, line: usize) -> Option<gix::co
         .or_else(|| name.strip_suffix(".cmd"))
         .or_else(|| name.strip_suffix(".bat"))
         .unwrap_or(&name);
-    let mut file = path.as_os_str().to_os_string();
-    let option = match name {
-        "vi" | "vim" | "nvim" | "hx" | "helix" => format!("+{}", line.max(1)),
-        "code" | "code-insiders" => {
-            file.push(format!(":{}:1", line.max(1)));
-            "--goto".into()
-        }
+    let vscode = matches!(name, "code" | "code-insiders");
+    let position = match name {
+        "vi" | "vim" | "nvim" | "hx" | "helix" => line.map(|line| format!("+{}", line.max(1))),
+        "code" | "code-insiders" => line.map(|_| "--goto".into()),
         _ => return None,
     };
+    if position.is_none() && !(wait && vscode) {
+        return None;
+    }
+    let mut file = path.as_os_str().to_os_string();
+    if vscode && let Some(line) = line {
+        file.push(format!(":{}:1", line.max(1)));
+    }
     let index = parsed
         .args
         .iter()
         .position(|arg| arg == "--")
         .unwrap_or(parsed.args.len());
-    parsed.args.insert(index, option.into());
+    let options = position.into_iter().chain(
+        (wait && vscode && !parsed.args[..index].iter().any(|arg| arg == "--wait"))
+            .then(|| "--wait".into()),
+    );
+    parsed.args.splice(index..index, options.map(Into::into));
     parsed.args.push(file);
     Some(parsed.env.into_iter().fold(
         gix::command::prepare(parsed.command).args(parsed.args),
         |command, (key, value)| command.env(key, value),
     ))
+}
+
+/// The temporary copy is owned until the editor exits; it is never written to the worktree.
+pub(super) fn open_historical(
+    terminal: &mut DefaultTerminal,
+    repo: &Repository,
+    revision: &str,
+    target: EditorTarget<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let copy = HistoricalCopy::new(repo, revision, target.path)?;
+    let command = EditorCommand::prepare_with_wait(
+        copy.directory.path(),
+        Some(EditorTarget {
+            path: Path::new(&copy.filename),
+            line: target.line,
+        }),
+        std::env::var_os("VISUAL"),
+        std::env::var_os("EDITOR"),
+        true,
+    )?;
+    let result = command.open(terminal)?;
+    // Dropping the copy removes any edits when the child has finished.
+    result?;
+    Ok(())
+}
+
+struct HistoricalCopy {
+    directory: tempfile::TempDir,
+    filename: OsString,
+}
+
+impl HistoricalCopy {
+    fn new(repo: &Repository, revision: &str, path: &Path) -> Result<Self, EditorError> {
+        let bytes = repo
+            .historical_blob(revision, path)?
+            .ok_or(EditorError::NoActiveFile)?;
+        let directory = tempfile::Builder::new()
+            .prefix(&format!("dift-{}-", &revision[..revision.len().min(12)]))
+            .tempdir()?;
+        let filename = path
+            .file_name()
+            .ok_or(EditorError::NoActiveFile)?
+            .to_os_string();
+        fs::write(directory.path().join(&filename), bytes)?;
+        Ok(Self {
+            directory,
+            filename,
+        })
+    }
 }
 
 /// Reject expansion and control syntax outside literal quoting, before shell-word parsing.
@@ -274,6 +348,27 @@ mod tests {
         let error = result.err().ok_or("Missing file should report an error")?;
         assert!(error.to_string().contains("missing\\nfile"));
         assert!(!error.to_string().contains('\n'));
+        Ok(())
+    }
+
+    #[test]
+    fn historical_editor_copy_is_disposable_and_does_not_touch_the_worktree() -> AppResult<()> {
+        // Given: a committed file and a modified working-tree version.
+        let fixture = Fixture::new("")?;
+        let repo = fixture.repo()?;
+        let commit = repo.resolve("HEAD")?;
+        fixture.write("tracked.txt", "working tree\n")?;
+        let copy = HistoricalCopy::new(&repo, &commit, Path::new("tracked.txt"))?;
+        let path = copy.directory.path().join("tracked.txt");
+        // When: editing and dropping the temporary copy.
+        fs::write(&path, "edited\n")?;
+        drop(copy);
+        // Then: only the temporary path is removed.
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("tracked.txt"))?,
+            "working tree\n"
+        );
         Ok(())
     }
 }

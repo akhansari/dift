@@ -6,6 +6,7 @@ fn spec(snapshot: &Snapshot, split: bool, width: usize, visible: bool) -> Render
         selected: &[0],
         width,
         split,
+        presentation: crate::model::Presentation::Changes,
         show_line_numbers: visible,
         query: "after",
         preview_rows: 0,
@@ -19,6 +20,23 @@ fn render(renderer: &mut Renderer, spec: RenderSpec<'_>) -> Result<Arc<Document>
         true
     })?;
     Ok(document)
+}
+
+#[test]
+fn full_file_rows_show_only_the_source_line_number() -> crate::AppResult<()> {
+    // Given: a full file from history with only a new-side line number.
+    let snapshot = full_file_snapshot();
+    let mut renderer = Renderer::new(Config::default())?;
+    // When: rendering the file at a width that could fit both gutters.
+    let document = render(&mut renderer, spec(&snapshot, false, 80, true))?;
+    // Then: one gutter is shown, with the original source coordinate retained.
+    assert_eq!(
+        styled_source_lines(&document)[0].to_string().trim_end(),
+        "    1   let after = 2;"
+    );
+    assert_eq!(document.rows[4].anchors[0].number, 1);
+    assert!(!document.rows[4].anchors[0].old);
+    Ok(())
 }
 
 #[test]

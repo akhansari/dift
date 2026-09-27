@@ -3,7 +3,7 @@
 ## Rust Standards
 
 - Use feature-based structure.
-- Prefer expression-oriented, functional code when it improves readability.
+- Prefer expression-oriented and functional code.
 - Write idiomatic modern Rust with clear ownership and minimal to zero cloning.
 - Prefer borrowing over cloning, but optimize for clarity before micro-optimizing allocations.
 - Avoid `unwrap`, `expect`, and `panic!`.
@@ -35,7 +35,7 @@ Before finishing code changes, run:
 
 ```bash
 cargo fmt
-cargo clippy
-cargo check
+cargo check --all-targets
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```

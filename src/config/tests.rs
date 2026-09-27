@@ -670,6 +670,69 @@ fn stage_binding_is_generated_and_can_be_reassigned() -> Result<(), ConfigError>
 }
 
 #[test]
+fn existing_shortcuts_take_precedence_over_new_history_defaults() -> Result<(), ConfigError> {
+    // Given: existing actions assigned the proposed history and detail keys.
+    let text = "keybindings { global { toggle-sidebar \"t\"; open-editor \"v\"; } }";
+    // When: loading an older configuration after history defaults are introduced.
+    let config = Config::parse(text)?;
+    // Then: the existing actions still receive their original keys.
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Global, KeyEvent::from(KeyCode::Char('t'))),
+        Some(Action::Sidebar)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Global, KeyEvent::from(KeyCode::Char('v'))),
+        Some(Action::OpenEditor)
+    );
+    Ok(())
+}
+
+#[test]
+fn default_config_exposes_all_history_shortcuts() -> Result<(), ConfigError> {
+    // Given: the generated default configuration.
+    let template = Config::template();
+    // When: parsing the template users can customize.
+    let config = Config::parse(&template)?;
+    // Then: opening history and its list/detail actions have configurable keys.
+    assert!(template.contains("history \"t\""));
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::History, KeyEvent::from(KeyCode::Char('b'))),
+        Some(Action::MarkBase)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::History, KeyEvent::from(KeyCode::Char('m'))),
+        Some(Action::Compare)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::History, KeyEvent::from(KeyCode::Char('v'))),
+        Some(Action::ToggleFiles)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::History, KeyEvent::from(KeyCode::Char('x'))),
+        Some(Action::Swap)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::History, KeyEvent::from(KeyCode::Char('i'))),
+        Some(Action::CommitInfo)
+    );
+    Ok(())
+}
+
+#[test]
 fn discard_binding_is_generated_and_can_be_reassigned() -> Result<(), ConfigError> {
     // Given
     let template = Config::template();

@@ -27,15 +27,15 @@ impl TreeRollback {
     fn capture(state: &State) -> Self {
         Self {
             selection: state.selection.clone(),
-            collapsed: state.collapsed.clone(),
-            unfiltered_collapsed: state.unfiltered_collapsed.clone(),
+            collapsed: state.views.collapsed().clone(),
+            unfiltered_collapsed: state.views.unfiltered().clone(),
         }
     }
 
     fn restore(self, state: &mut State) {
         state.selection = self.selection;
-        state.collapsed = self.collapsed;
-        state.unfiltered_collapsed = self.unfiltered_collapsed;
+        *state.views.collapsed_mut() = self.collapsed;
+        *state.views.unfiltered_mut() = self.unfiltered_collapsed;
     }
 }
 
@@ -164,10 +164,11 @@ impl State {
         if query.is_empty() {
             let changed = self.selection != tree.selection;
             self.selection.clone_from(&tree.selection);
-            self.collapsed.clone_from(&tree.collapsed);
-            self.unfiltered_collapsed
+            self.views.collapsed_mut().clone_from(&tree.collapsed);
+            self.views
+                .unfiltered_mut()
                 .clone_from(&tree.unfiltered_collapsed);
-            self.tree.reveal(&self.collapsed);
+            self.tree.reveal(self.views.collapsed());
             if changed {
                 self.diff.scroll = 0;
             }
@@ -244,12 +245,12 @@ impl State {
                     changed = self.filter != previous || self.selection != tree.selection;
                     self.filter = previous;
                     tree.restore(self);
-                    self.tree.refilter(&self.filter, &self.collapsed);
+                    self.tree.refilter(&self.filter, self.views.collapsed());
                 }
                 PromptState::Find { tree, .. } => {
                     changed = self.selection != tree.selection;
                     tree.restore(self);
-                    self.tree.reveal(&self.collapsed);
+                    self.tree.reveal(self.views.collapsed());
                 }
                 PromptState::Search { previous } => {
                     changed = self.diff.search != previous;

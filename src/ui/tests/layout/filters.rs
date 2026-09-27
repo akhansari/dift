@@ -18,8 +18,8 @@ fn working_tree_modal_shows_groups_and_keyboard_controls() -> AppResult<()> {
     assert!(text.contains("[ ] Unstaged/Untracked"));
     assert!(text.contains("[ ] Staged"));
     assert!(text.contains("[ ] U  Unmerged/conflict"));
-    assert!(text.contains("Ctrl-R reset selections"));
-    assert!(text.contains("Enter accept · Esc cancel"));
+    assert!(text.contains("ctrl-r reset selections"));
+    assert!(text.contains("enter accept · esc cancel"));
     Ok(())
 }
 
@@ -81,6 +81,6 @@ fn small_terminal_explains_how_to_cancel_filters() -> AppResult<()> {
     // When
     let buffer = render(&state, &Config::default(), 40, 14)?;
     // Then
-    assert!(text(&buffer).contains("Esc cancels."));
+    assert!(text(&buffer).contains("esc cancels."));
     Ok(())
 }

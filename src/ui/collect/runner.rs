@@ -143,6 +143,10 @@ impl Runner {
     fn accept(&mut self, request: Request, mutations: &mut Vec<Mutation>) {
         match request {
             Request::Collect(request) => self.latest = request,
+            Request::Mode(mode, request) => {
+                self.mode = mode;
+                self.latest = request;
+            }
             Request::Toggle(target, request) => {
                 self.latest = request;
                 mutations.push(Mutation::Toggle(target));

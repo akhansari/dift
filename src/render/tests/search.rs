@@ -129,6 +129,7 @@ fn prefix_preview_clips_wrapped_match_fragments() -> crate::AppResult<()> {
             selected: &[0],
             width: 19,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "needle",
             preview_rows: 5,

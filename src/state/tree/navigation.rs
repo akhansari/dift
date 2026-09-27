@@ -30,6 +30,13 @@ impl State {
             }
             changed = true;
         }
+        if self.views.presentation.is_files()
+            && self.selection.as_os_str().is_empty()
+            && let Some(first) = self.tree.rows(false).first()
+        {
+            self.selection.clone_from(&first.path);
+            changed = true;
+        }
         if changed {
             self.diff.scroll = 0;
         }
@@ -39,10 +46,10 @@ impl State {
     pub(in crate::state) fn reveal_selection(&mut self) {
         let mut revealed = false;
         for ancestor in self.selection.ancestors().skip(1) {
-            revealed |= self.collapsed.remove(ancestor);
+            revealed |= self.views.collapsed_mut().remove(ancestor);
         }
         if revealed {
-            self.tree.reveal(&self.collapsed);
+            self.tree.reveal(self.views.collapsed());
         }
     }
 
@@ -87,8 +94,8 @@ impl State {
             .iter()
             .any(|row| row.path == self.selection && row.directory);
         if is_directory && !self.is_collapsed(&self.selection) {
-            self.collapsed.insert(self.selection.clone());
-            self.tree.reveal(&self.collapsed);
+            self.views.collapsed_mut().insert(self.selection.clone());
+            self.tree.reveal(self.views.collapsed());
         } else if let Some(parent) = self
             .tree
             .rows(false)
@@ -104,10 +111,10 @@ impl State {
     pub(in crate::state) fn expand(&mut self) {
         let mut expanded = false;
         for ancestor in self.selection.ancestors() {
-            expanded |= self.collapsed.remove(ancestor);
+            expanded |= self.views.collapsed_mut().remove(ancestor);
         }
         if expanded {
-            self.tree.reveal(&self.collapsed);
+            self.tree.reveal(self.views.collapsed());
         }
     }
 
@@ -149,12 +156,12 @@ impl State {
         };
         if self.is_collapsed(&row.path) {
             for ancestor in row.path.ancestors() {
-                self.collapsed.remove(ancestor);
+                self.views.collapsed_mut().remove(ancestor);
             }
         } else {
-            self.collapsed.insert(row.path.clone());
+            self.views.collapsed_mut().insert(row.path.clone());
         }
-        self.tree.reveal(&self.collapsed);
+        self.tree.reveal(self.views.collapsed());
         let hidden = !self
             .tree
             .rows(false)

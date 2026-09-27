@@ -49,6 +49,28 @@ impl Collector {
         let mut exact_paths = BTreeSet::new();
         let mut stats = LineStats::default();
         match mode {
+            Mode::Files { id, selected } => {
+                result.branch = format!("{} · files", &id[..id.len().min(12)]);
+                result.changes = self.commit_files(id, selected.as_deref(), limits, loaded)?;
+            }
+            Mode::Commit { id, parent } => {
+                result.branch = format!("{} · changes", &id[..id.len().min(12)]);
+                let extra = parent.as_ref().map_or_else(
+                    || vec!["--root", id.as_str()],
+                    |parent| vec![parent.as_str(), id.as_str()],
+                );
+                let tracked = self.tracked(
+                    Category::Comparison,
+                    &extra,
+                    limits,
+                    loaded,
+                    &[],
+                    whitespace,
+                )?;
+                result.changes = tracked.changes;
+                exact_paths.extend(tracked.identities.into_keys());
+                stats = tracked.stats;
+            }
             Mode::Comparison { base, head, label } => {
                 result.branch.clone_from(label);
                 let tracked = self.tracked(
@@ -144,7 +166,7 @@ impl Collector {
             exact_paths.remove(&change.path);
         }
         result.whitespace_hidden_files = exact_paths.len();
-        result.tracked_stats = Some(stats);
+        result.tracked_stats = (!matches!(mode, Mode::Files { .. })).then_some(stats);
         result.sort();
         Ok(result)
     }
@@ -458,6 +480,13 @@ fn diff_args(
         .map(OsString::from),
     );
     args.extend(whitespace.git_flag().map(OsString::from));
+    if extra.first() == Some(&"--root") {
+        // diff-tree can compare a root commit against an empty tree without
+        // writing an empty-tree object into the user's repository.
+        args[2] = OsString::from("diff-tree");
+        args.push("-r".into());
+        args.push("--no-commit-id".into());
+    }
     args.extend(extra.iter().map(OsString::from));
     args.push("--".into());
     for path in conflicts {

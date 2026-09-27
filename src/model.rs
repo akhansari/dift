@@ -14,6 +14,20 @@ pub enum Category {
     Comparison,
 }
 
+/// Whether a revision is displayed as a diff or as complete committed files.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Presentation {
+    #[default]
+    Changes,
+    Files,
+}
+
+impl Presentation {
+    pub fn is_files(self) -> bool {
+        matches!(self, Self::Files)
+    }
+}
+
 impl Category {
     pub fn label(self) -> &'static str {
         match self {

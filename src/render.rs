@@ -348,6 +348,8 @@ pub struct RenderSpec<'a> {
     pub width: usize,
     /// Whether to lay out old and new lines side by side.
     pub split: bool,
+    /// Whether the selected revision is shown as complete files instead of diffs.
+    pub presentation: crate::model::Presentation,
     /// Whether to display source line number columns.
     pub show_line_numbers: bool,
     /// Search query to highlight in the rendered text.
@@ -374,6 +376,7 @@ struct CachedLayout {
     prepared: Arc<Prepared>,
     width: usize,
     split: bool,
+    presentation: crate::model::Presentation,
     show_line_numbers: bool,
     query: String,
     enriched: bool,
@@ -479,6 +482,7 @@ impl Renderer {
                 selected,
                 width,
                 split,
+                presentation: crate::model::Presentation::Changes,
                 show_line_numbers: true,
                 query,
                 preview_rows: 0,
@@ -512,7 +516,14 @@ impl Renderer {
             .map(|(hash, change)| self.cached_layout(*hash, change, spec, true))
             .collect::<Option<Vec<_>>>()
         {
-            let document = compose(&versions, &documents, self.config.light, None, cancel)?;
+            let document = compose(
+                &versions,
+                &documents,
+                self.config.light,
+                spec.presentation,
+                None,
+                cancel,
+            )?;
             cancel.check()?;
             return if publish(RenderUpdate {
                 document: Arc::new(document),
@@ -531,7 +542,14 @@ impl Renderer {
         }
         let limit = (spec.preview_rows > 0).then_some(spec.preview_rows);
         let mut documents = self.preview_files(&prepared, spec, limit, cancel)?;
-        let document = compose(&versions, &documents, self.config.light, limit, cancel)?;
+        let document = compose(
+            &versions,
+            &documents,
+            self.config.light,
+            spec.presentation,
+            limit,
+            cancel,
+        )?;
         let partial = document.partial;
 
         cancel.check()?;
@@ -545,7 +563,14 @@ impl Renderer {
         cancel.check()?;
         if partial {
             documents = self.preview_files(&prepared, spec, None, cancel)?;
-            let document = compose(&versions, &documents, self.config.light, None, cancel)?;
+            let document = compose(
+                &versions,
+                &documents,
+                self.config.light,
+                spec.presentation,
+                None,
+                cancel,
+            )?;
             cancel.check()?;
             if !publish(RenderUpdate {
                 document: Arc::new(document),
@@ -613,7 +638,14 @@ impl Renderer {
             if index + 1 < documents.len()
                 && last_publication.is_none_or(|time| time.elapsed() >= Duration::from_millis(33))
             {
-                let document = compose(&versions, &documents, self.config.light, None, cancel)?;
+                let document = compose(
+                    &versions,
+                    &documents,
+                    self.config.light,
+                    spec.presentation,
+                    None,
+                    cancel,
+                )?;
                 cancel.check()?;
                 if !publish(RenderUpdate {
                     document: Arc::new(document),
@@ -624,7 +656,14 @@ impl Renderer {
                 last_publication = Some(Instant::now());
             }
         }
-        let document = compose(&versions, &documents, self.config.light, None, cancel)?;
+        let document = compose(
+            &versions,
+            &documents,
+            self.config.light,
+            spec.presentation,
+            None,
+            cancel,
+        )?;
 
         cancel.check()?;
         if publish(RenderUpdate {
@@ -684,6 +723,7 @@ impl Renderer {
                 && entry.prepared.change.as_ref() == change
                 && entry.width == spec.width.max(4)
                 && entry.split == spec.split
+                && entry.presentation == spec.presentation
                 && entry.show_line_numbers == spec.show_line_numbers
                 && entry.query == spec.query
                 && entry.enriched == enriched
@@ -705,6 +745,7 @@ impl Renderer {
             prepared,
             width: spec.width.max(4),
             split: spec.split,
+            presentation: spec.presentation,
             show_line_numbers: spec.show_line_numbers,
             query: spec.query.into(),
             enriched,
@@ -758,6 +799,7 @@ fn compose(
     versions: &[(u64, &Change)],
     files: &[Arc<Document>],
     light: bool,
+    presentation: crate::model::Presentation,
     limit: Option<usize>,
     cancel: &Cancellation,
 ) -> Result<Document, Cancelled> {
@@ -770,9 +812,14 @@ fn compose(
             if !result.rows.is_empty() {
                 layout::push_header(&mut result, "", palette.base());
             }
+            let heading = if presentation.is_files() {
+                " TIMECAPSULE ".to_owned()
+            } else {
+                format!(" {} ", change.category.label().to_uppercase())
+            };
             layout::push_header(
                 &mut result,
-                &format!(" {} ", change.category.label().to_uppercase()),
+                &heading,
                 palette
                     .base()
                     .fg(palette.accent)
@@ -836,7 +883,11 @@ fn compose(
     if result.rows.is_empty() {
         layout::push_header(
             &mut result,
-            " No changes in this view",
+            if presentation.is_files() {
+                " Select a file to view its contents"
+            } else {
+                " No changes in this view"
+            },
             palette.base().fg(palette.muted),
         );
     }

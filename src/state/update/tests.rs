@@ -632,6 +632,22 @@ fn hidden_line_numbers_survive_layout_and_snapshot_changes() {
 }
 
 #[test]
+fn full_file_view_uses_one_pane_without_losing_the_split_preference() {
+    // Given: split layout is enabled for diff views.
+    let mut state = State::new(true);
+    state.set_presentation(crate::model::Presentation::Files);
+    // When: requesting a render of full-file contents.
+    let request = state.render_request(80, 20);
+    // Then: the file has one pane, while diff views can still use split layout.
+    assert!(!request.split);
+    assert_eq!(request.presentation, crate::model::Presentation::Files);
+    state.set_presentation(crate::model::Presentation::Changes);
+    let request = state.render_request(80, 20);
+    assert!(request.split);
+    assert_eq!(request.presentation, crate::model::Presentation::Changes);
+}
+
+#[test]
 fn help_moves_up_immediately_after_excess_down_input() {
     // Given
     let mut state = State::new(false);

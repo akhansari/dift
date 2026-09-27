@@ -345,6 +345,7 @@ impl Config {
         if config.light && !explicit_theme {
             config.theme = "InspiredGitHub".into();
         }
+        config.bindings.prune_default_conflicts();
         config.bindings.validate()?;
         Ok(config)
     }

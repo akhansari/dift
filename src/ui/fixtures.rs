@@ -11,7 +11,7 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     pub root: PathBuf,
 }
 impl Fixture {

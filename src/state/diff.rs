@@ -74,6 +74,7 @@ impl DiffState {
             selected,
             width,
             split: self.split,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: self.show_line_numbers,
             query: self.search.clone(),
             // A prefix preview cannot preserve an anchor beyond that prefix.

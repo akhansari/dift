@@ -300,6 +300,7 @@ fn partial_previews_keep_the_header_and_full_loaded_line_counts() -> AppResult<(
             selected: &request.selected,
             width: 59,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "",
             preview_rows: 6,

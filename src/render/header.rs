@@ -1,5 +1,8 @@
 use super::{Change, LineKind, Palette};
-use crate::{model::display_path, text::name_spans};
+use crate::{
+    model::{Presentation, display_path},
+    text::name_spans,
+};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -7,27 +10,36 @@ use ratatui::{
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) fn line(change: &Change, width: usize, palette: Palette) -> Line<'static> {
+pub(super) fn line(
+    change: &Change,
+    width: usize,
+    palette: Palette,
+    presentation: Presentation,
+) -> Line<'static> {
     let style = palette.base().bg(palette.panel);
     let muted = style.fg(palette.muted);
     let path = display_path(&change.path);
     let old_path = change.old_path.as_deref().map(display_path);
     let status = status_label(change.status);
     let category = change.category.label();
+    // Historical full-file entries have no diff status or change counts.
+    let full_file = presentation.is_files();
     // Conflict views contain working-tree text, not added and removed lines.
     let counts =
-        (!change.oversized && change.status != 'U' && !change.hunks.is_empty()).then(|| {
-            let (added, removed) = change.hunks.iter().flat_map(|hunk| &hunk.lines).fold(
-                (0usize, 0usize),
-                |(added, removed), line| {
-                    (
-                        added + usize::from(line.kind == LineKind::Added),
-                        removed + usize::from(line.kind == LineKind::Removed),
-                    )
-                },
-            );
-            (format!("+{added}"), format!("−{removed}"))
-        });
+        (!change.oversized && change.status != 'U' && !full_file && !change.hunks.is_empty()).then(
+            || {
+                let (added, removed) = change.hunks.iter().flat_map(|hunk| &hunk.lines).fold(
+                    (0usize, 0usize),
+                    |(added, removed), line| {
+                        (
+                            added + usize::from(line.kind == LineKind::Added),
+                            removed + usize::from(line.kind == LineKind::Removed),
+                        )
+                    },
+                );
+                (format!("+{added}"), format!("−{removed}"))
+            },
+        );
     // Reserve a focus marker, a separating space, and right padding.
     let available = width.saturating_sub(3);
     let name_width = basename(&path).width();
@@ -37,7 +49,7 @@ pub(super) fn line(change: &Change, width: usize, palette: Palette) -> Line<'sta
         path_width + 2 + labels_width + 2 + added.width() + 1 + removed.width() <= available
     });
     let mut metadata = Vec::new();
-    if name_width + 2 + labels_width <= available {
+    if !full_file && name_width + 2 + labels_width <= available {
         let color = match change.status {
             'A' | '?' => palette.added_foreground,
             'D' | 'U' => palette.removed_foreground,
@@ -46,7 +58,7 @@ pub(super) fn line(change: &Change, width: usize, palette: Palette) -> Line<'sta
         metadata.push(Span::styled(status.as_ref(), style.fg(color)));
         metadata.push(Span::styled(" · ", muted));
     }
-    if name_width + 2 + category.width() <= available {
+    if !full_file && name_width + 2 + category.width() <= available {
         metadata.push(Span::styled(category, muted));
     }
     if let Some((added, removed)) = &counts {

@@ -16,6 +16,7 @@ exclude = ["/dist/**"]
 alacritty_terminal = { version = "0.26.0", default-features = false }
 base64 = "0.23.1"
 thiserror = "2.0.20"
+tempfile = "3.27"
 gix = { version = "0.87.1", default-features = false, features = [
     "status",
     "revision",
@@ -25,7 +26,7 @@ gix = { version = "0.87.1", default-features = false, features = [
 ] }
 ignore = "0.4.33"
 kdl = "6.7.1"
-ratatui = "0.30.2"
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 usage-rs = "6.6.1"
 notify = "8.2.0"
 nucleo-matcher = "0.3.1"
@@ -57,4 +58,3 @@ rustix-openpty = "0.2"
 [target.'cfg(unix)'.dev-dependencies]
 memmap2 = "0.9"
 serde_json = "1"
-tempfile = "3.27"

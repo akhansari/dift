@@ -1,5 +1,8 @@
 use super::{Cancellation, Document, RenderSpec, Renderer};
-use crate::{config::Config, model::Snapshot};
+use crate::{
+    config::Config,
+    model::{Presentation, Snapshot},
+};
 use std::{
     io,
     sync::{
@@ -22,6 +25,8 @@ pub struct RenderRequest {
     pub width: usize,
     /// Whether to lay out old and new lines side by side.
     pub split: bool,
+    /// Whether the selected revision is shown as complete files instead of diffs.
+    pub presentation: Presentation,
     /// Whether to display source line number columns.
     pub show_line_numbers: bool,
     /// Search query to highlight in the rendered text.
@@ -79,6 +84,7 @@ impl RenderWorker {
                         selected: &request.selected,
                         width: request.width,
                         split: request.split,
+                        presentation: request.presentation,
                         show_line_numbers: request.show_line_numbers,
                         query: &request.query,
                         preview_rows: request.preview_rows,

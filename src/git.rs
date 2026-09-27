@@ -11,6 +11,7 @@ use thiserror::Error;
 mod changes;
 mod collector;
 mod discard;
+mod history;
 mod mutation;
 mod patch;
 mod source;
@@ -19,6 +20,7 @@ pub use collector::Collector;
 pub(crate) use collector::WatchContext;
 pub(crate) use discard::{DISCARD_MODES, DiscardOption};
 pub use discard::{DiscardMode, DiscardOutcome, DiscardPreview};
+pub use history::{CommitInfo, HistoryPage};
 pub(crate) use mutation::{IndexMutation, MutationAttribution};
 pub use patch::parse_patch;
 pub use stage::{ChangeTarget, StageOutcome, StageTarget};
@@ -76,6 +78,14 @@ pub struct Repository {
 #[derive(Debug, Clone)]
 pub enum Mode {
     Watch,
+    Commit {
+        id: String,
+        parent: Option<String>,
+    },
+    Files {
+        id: String,
+        selected: Option<PathBuf>,
+    },
     Comparison {
         base: String,
         head: String,

@@ -82,24 +82,24 @@ impl State {
     pub(super) fn refilter(&mut self) {
         let active = !self.filter.is_empty() || self.change_filter.restricted();
         if !active {
-            if let Some(collapsed) = self.unfiltered_collapsed.take() {
-                self.collapsed = collapsed;
+            if let Some(collapsed) = self.views.unfiltered_mut().take() {
+                *self.views.collapsed_mut() = collapsed;
             }
-        } else if self.unfiltered_collapsed.is_none() {
-            self.unfiltered_collapsed = Some(self.collapsed.clone());
+        } else if self.views.unfiltered().is_none() {
+            *self.views.unfiltered_mut() = Some(self.views.collapsed().clone());
         }
         self.tree
             .filter_changes(&self.snapshot, &self.change_filter);
-        self.tree.refilter(&self.filter, &self.collapsed);
+        self.tree.refilter(&self.filter, self.views.collapsed());
         if active {
             let mut revealed = false;
             for row in self.tree.rows(true).iter().filter(|row| row.directory) {
                 for ancestor in row.path.ancestors() {
-                    revealed |= self.collapsed.remove(ancestor);
+                    revealed |= self.views.collapsed_mut().remove(ancestor);
                 }
             }
             if revealed {
-                self.tree.reveal(&self.collapsed);
+                self.tree.reveal(self.views.collapsed());
             }
         }
         self.reconcile_selection();
@@ -124,8 +124,8 @@ impl State {
             selected: 0,
             previous: self.change_filter.clone(),
             selection: self.selection.clone(),
-            collapsed: self.collapsed.clone(),
-            unfiltered_collapsed: self.unfiltered_collapsed.clone(),
+            collapsed: self.views.collapsed().clone(),
+            unfiltered_collapsed: self.views.unfiltered().clone(),
         });
     }
 
@@ -142,11 +142,11 @@ impl State {
                 if let Some(menu) = self.filter_menu.take() {
                     self.change_filter = menu.previous;
                     self.selection = menu.selection;
-                    self.collapsed = menu.collapsed;
-                    self.unfiltered_collapsed = menu.unfiltered_collapsed;
+                    *self.views.collapsed_mut() = menu.collapsed;
+                    *self.views.unfiltered_mut() = menu.unfiltered_collapsed;
                     self.tree
                         .filter_changes(&self.snapshot, &self.change_filter);
-                    self.tree.refilter(&self.filter, &self.collapsed);
+                    self.tree.refilter(&self.filter, self.views.collapsed());
                     self.reconcile_selection();
                 }
                 Effects::draw(true)

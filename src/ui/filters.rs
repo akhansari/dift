@@ -1,13 +1,15 @@
+use super::modal;
 use crate::{
+    input::fixed_key_label,
     render::Palette,
     state::{STATUSES, State},
 };
 use ratatui::{
     Frame,
-    layout::Rect,
+    crossterm::event::{KeyCode, KeyModifiers},
     style::Modifier,
     text::Line,
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 pub(super) fn draw(frame: &mut Frame, state: &State, palette: &Palette) {
@@ -49,33 +51,42 @@ pub(super) fn draw(frame: &mut Frame, state: &State, palette: &Palette) {
             format!("{status}  {label}"),
         ));
     }
-    lines.extend([
-        Line::raw(""),
-        Line::raw("↑/↓ move · Space toggle · Tab/Shift-Tab Switch group"),
-        Line::raw("Enter accept · Esc cancel · Ctrl-R reset selections"),
-    ]);
+    let key = |code, modifiers| fixed_key_label(code, modifiers);
+    let plain = KeyModifiers::NONE;
+    let close = key(KeyCode::Esc, plain);
+    let footer = vec![
+        modal::hint(
+            format!(
+                "{}/{} move · {} toggle · {}|{} switch group",
+                key(KeyCode::Up, plain),
+                key(KeyCode::Down, plain),
+                key(KeyCode::Char(' '), plain),
+                key(KeyCode::Tab, plain),
+                key(KeyCode::BackTab, plain),
+            ),
+            palette,
+        ),
+        modal::hint(
+            format!(
+                "{} accept · {} cancel · {} reset selections",
+                key(KeyCode::Enter, plain),
+                close,
+                key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            ),
+            palette,
+        ),
+    ];
     let area = frame.area();
-    let width = area.width.saturating_sub(2).min(64);
-    let height = usize::from(area.height.saturating_sub(2)).min(lines.len() + 2) as u16;
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Change filters ")
-        .style(style)
-        .border_style(style.fg(palette.accent));
-    let inner = block.inner(rect);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(block, rect);
+    let width = lines.iter().map(Line::width).max().unwrap_or(0);
+    let modal = modal::Modal::new(area, width, lines.len(), footer);
+    let inner = modal.draw(frame, " Change filters ", palette);
     if inner.width < 48 || usize::from(inner.height) < lines.len() {
         frame.render_widget(
-            Paragraph::new("Enlarge terminal to edit filters. Esc cancels.")
-                .style(style)
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(format!(
+                "Enlarge terminal to edit filters. {close} cancels."
+            ))
+            .style(style)
+            .wrap(Wrap { trim: false }),
             inner,
         );
         return;

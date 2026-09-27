@@ -48,13 +48,17 @@ impl State {
     }
 
     pub fn render_request(&mut self, width: usize, height: usize) -> RenderRequest {
-        self.diff.request(
+        let mut request = self.diff.request(
             Arc::clone(&self.snapshot),
             self.selected_changes(),
             &self.selection,
             width,
             height,
-        )
+        );
+        // Full-file contents have no old side to show in a split diff.
+        request.split &= !self.views.presentation.is_files();
+        request.presentation = self.views.presentation;
+        request
     }
 
     pub fn apply_render(&mut self, result: RenderResult, height: usize) -> bool {

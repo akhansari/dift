@@ -161,6 +161,7 @@ fn previews_keep_the_first_change_even_before_its_row_is_rendered() -> crate::Ap
             selected: &[0],
             width: 100,
             split: false,
+            presentation: crate::model::Presentation::Changes,
             show_line_numbers: true,
             query: "",
             preview_rows: 4,
