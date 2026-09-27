@@ -23,6 +23,14 @@ struct TrackedChanges {
     stats: LineStats,
 }
 
+#[derive(Clone, Copy)]
+enum DiffTarget<'a> {
+    Worktree,
+    Index,
+    Pair(&'a str, &'a str),
+    Root(&'a str),
+}
+
 impl Collector {
     pub fn snapshot(
         &mut self,
@@ -55,13 +63,12 @@ impl Collector {
             }
             Mode::Commit { id, parent } => {
                 result.branch = format!("{} · changes", &id[..id.len().min(12)]);
-                let extra = parent.as_ref().map_or_else(
-                    || vec!["--root", id.as_str()],
-                    |parent| vec![parent.as_str(), id.as_str()],
-                );
+                let target = parent
+                    .as_deref()
+                    .map_or(DiffTarget::Root(id), |parent| DiffTarget::Pair(parent, id));
                 let tracked = self.tracked(
                     Category::Comparison,
-                    &extra,
+                    target,
                     limits,
                     loaded,
                     &[],
@@ -75,7 +82,7 @@ impl Collector {
                 result.branch.clone_from(label);
                 let tracked = self.tracked(
                     Category::Comparison,
-                    &[base.as_str(), head.as_str()],
+                    DiffTarget::Pair(base, head),
                     limits,
                     loaded,
                     &[],
@@ -125,12 +132,12 @@ impl Collector {
                         loaded,
                     )?);
                 }
-                for (category, extra) in [
-                    (Category::Unstaged, &[][..]),
-                    (Category::Staged, &["--cached"][..]),
+                for (category, target) in [
+                    (Category::Unstaged, DiffTarget::Worktree),
+                    (Category::Staged, DiffTarget::Index),
                 ] {
                     let tracked =
-                        self.tracked(category, extra, limits, loaded, &conflicts, whitespace)?;
+                        self.tracked(category, target, limits, loaded, &conflicts, whitespace)?;
                     result.changes.extend(tracked.changes);
                     exact_paths.extend(tracked.identities.keys().cloned());
                     for (path, identity) in tracked.identities {
@@ -174,7 +181,7 @@ impl Collector {
     fn tracked(
         &self,
         category: Category,
-        extra: &[&str],
+        target: DiffTarget<'_>,
         limits: Limits,
         loaded: &BTreeSet<PathBuf>,
         conflicts: &[PathBuf],
@@ -185,12 +192,12 @@ impl Collector {
         } else {
             let output = self
                 .paths
-                .run(diff_args(extra, conflicts, Whitespace::Exact, true))?;
+                .run(diff_args(target, conflicts, Whitespace::Exact, true))?;
             Some(parse_raw_records(&mut output.as_slice())?)
         };
         let output = self
             .paths
-            .run(diff_args(extra, conflicts, whitespace, false))?;
+            .run(diff_args(target, conflicts, whitespace, false))?;
         let (records, stats) = parse_raw_patch(&output)?;
         let identities = exact_records
             .as_deref()
@@ -440,7 +447,7 @@ fn missing_file_summary(conflict: bool) -> &'static str {
 }
 
 fn diff_args(
-    extra: &[&str],
+    target: DiffTarget<'_>,
     conflicts: &[PathBuf],
     whitespace: Whitespace,
     raw_only: bool,
@@ -448,7 +455,11 @@ fn diff_args(
     let mut args: Vec<OsString> = [
         "-c",
         "diff.suppressBlankEmpty=false",
-        "diff",
+        if matches!(target, DiffTarget::Root(_)) {
+            "diff-tree"
+        } else {
+            "diff"
+        },
         "-z",
         "--full-index",
         "--no-abbrev",
@@ -480,14 +491,21 @@ fn diff_args(
         .map(OsString::from),
     );
     args.extend(whitespace.git_flag().map(OsString::from));
-    if extra.first() == Some(&"--root") {
-        // diff-tree can compare a root commit against an empty tree without
-        // writing an empty-tree object into the user's repository.
-        args[2] = OsString::from("diff-tree");
-        args.push("-r".into());
-        args.push("--no-commit-id".into());
+    match target {
+        DiffTarget::Worktree => {}
+        DiffTarget::Index => args.push("--cached".into()),
+        DiffTarget::Pair(base, head) => args.extend([base.into(), head.into()]),
+        DiffTarget::Root(id) => {
+            // diff-tree compares a root against the empty tree without writing
+            // an empty-tree object into the user's repository.
+            args.extend([
+                "-r".into(),
+                "--no-commit-id".into(),
+                "--root".into(),
+                id.into(),
+            ]);
+        }
     }
-    args.extend(extra.iter().map(OsString::from));
     args.push("--".into());
     for path in conflicts {
         let mut exclude = OsString::from(":(top,literal,exclude)");

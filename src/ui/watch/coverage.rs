@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AppResult, ui::fixtures::Fixture};
+use crate::{AppResult, test_support::Fixture};
 
 fn watching(fixture: &Fixture) -> AppResult<(Watches, Inbox)> {
     let collector = fixture.collector()?;

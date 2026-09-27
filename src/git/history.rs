@@ -385,7 +385,7 @@ impl super::Collector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppResult, git::Mode, ui::fixtures::Fixture};
+    use crate::{AppResult, git::Mode, test_support::Fixture};
 
     #[test]
     fn history_is_pinned_after_head_advances_and_pages_without_repeating_commits() -> AppResult<()>

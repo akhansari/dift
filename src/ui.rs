@@ -6,8 +6,6 @@ mod commit;
 mod discard;
 mod editor;
 mod filters;
-#[cfg(test)]
-pub(crate) mod fixtures;
 mod help;
 mod history;
 mod modal;

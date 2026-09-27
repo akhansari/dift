@@ -255,7 +255,7 @@ fn literal_command(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppResult, ui::fixtures::Fixture};
+    use crate::{AppResult, test_support::Fixture};
 
     #[cfg(unix)]
     #[path = "command_tests.rs"]

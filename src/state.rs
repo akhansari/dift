@@ -40,47 +40,53 @@ pub struct EditorTarget<'a> {
     pub line: Option<usize>,
 }
 
-/// Repository data and interactive state for the terminal UI.
+#[derive(Default)]
+struct ViewTree {
+    collapsed: BTreeSet<PathBuf>,
+    unfiltered: Option<BTreeSet<PathBuf>>,
+}
+
 #[derive(Default)]
 struct TreeViews {
     presentation: Presentation,
-    changes: BTreeSet<PathBuf>,
-    files: BTreeSet<PathBuf>,
+    changes: ViewTree,
+    files: ViewTree,
     files_initialized: bool,
-    changes_unfiltered: Option<BTreeSet<PathBuf>>,
-    files_unfiltered: Option<BTreeSet<PathBuf>>,
 }
 
 impl TreeViews {
-    fn collapsed(&self) -> &BTreeSet<PathBuf> {
+    fn current(&self) -> &ViewTree {
         match self.presentation {
             Presentation::Changes => &self.changes,
             Presentation::Files => &self.files,
         }
     }
 
-    fn collapsed_mut(&mut self) -> &mut BTreeSet<PathBuf> {
+    fn current_mut(&mut self) -> &mut ViewTree {
         match self.presentation {
             Presentation::Changes => &mut self.changes,
             Presentation::Files => &mut self.files,
         }
     }
 
+    fn collapsed(&self) -> &BTreeSet<PathBuf> {
+        &self.current().collapsed
+    }
+
+    fn collapsed_mut(&mut self) -> &mut BTreeSet<PathBuf> {
+        &mut self.current_mut().collapsed
+    }
+
     fn unfiltered(&self) -> &Option<BTreeSet<PathBuf>> {
-        match self.presentation {
-            Presentation::Changes => &self.changes_unfiltered,
-            Presentation::Files => &self.files_unfiltered,
-        }
+        &self.current().unfiltered
     }
 
     fn unfiltered_mut(&mut self) -> &mut Option<BTreeSet<PathBuf>> {
-        match self.presentation {
-            Presentation::Changes => &mut self.changes_unfiltered,
-            Presentation::Files => &mut self.files_unfiltered,
-        }
+        &mut self.current_mut().unfiltered
     }
 }
 
+/// Repository data and interactive state for the terminal UI.
 pub struct State {
     activity: activity::ActivityState,
     collection: CollectionState,
@@ -310,7 +316,7 @@ impl State {
             && !self.views.files_initialized
             && !self.snapshot.changes.is_empty()
         {
-            self.views.files = self
+            self.views.files.collapsed = self
                 .snapshot
                 .changes
                 .iter()
@@ -319,8 +325,8 @@ impl State {
                 .map(Path::to_path_buf)
                 .collect();
             self.views.files_initialized = true;
-            if self.views.files_unfiltered.is_some() {
-                self.views.files_unfiltered = Some(self.views.files.clone());
+            if self.views.files.unfiltered.is_some() {
+                self.views.files.unfiltered = Some(self.views.files.collapsed.clone());
             }
         }
         self.tree = TreeIndex::new(

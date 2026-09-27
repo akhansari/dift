@@ -1,3 +1,4 @@
+//! Shared repository fixture for Git, state, and UI unit tests.
 use crate::{
     AppResult,
     git::{Collector, Limits, Mode, Repository},

@@ -4,6 +4,8 @@ pub mod input;
 pub mod model;
 pub mod render;
 pub mod state;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod text;
 pub mod ui;
 

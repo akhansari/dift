@@ -104,7 +104,7 @@ fn newest_request(first: Request, pending: impl IntoIterator<Item = Request>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppResult, ui::fixtures::Fixture};
+    use crate::{AppResult, test_support::Fixture};
     use std::time::Duration;
 
     #[test]

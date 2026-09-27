@@ -714,7 +714,7 @@ mod tests {
 #[cfg(test)]
 mod filtering_tests {
     use super::*;
-    use crate::{AppResult, ui::fixtures::Fixture};
+    use crate::{AppResult, test_support::Fixture};
     use notify::event::{DataChange, Flag, ModifyKind, RenameMode};
 
     fn changed(path: PathBuf) -> Batch {

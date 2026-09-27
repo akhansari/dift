@@ -4,7 +4,7 @@ use crate::{
     git::{ChangeTarget, DISCARD_MODES, DiscardMode},
     input::Bindings,
     state::Command,
-    ui::fixtures::Fixture,
+    test_support::Fixture,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::sync::Arc;

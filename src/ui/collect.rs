@@ -120,7 +120,7 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AppResult, ui::fixtures::Fixture};
+    use crate::{AppResult, test_support::Fixture};
     use std::time::Instant;
 
     fn next_snapshot(worker: &Worker) -> AppResult<Snapshot> {
@@ -344,7 +344,7 @@ mod tests {
 #[cfg(test)]
 mod mutation_tests {
     use super::*;
-    use crate::{AppResult, ui::fixtures::Fixture};
+    use crate::{AppResult, test_support::Fixture};
     #[test]
     fn refresh_coalescing_keeps_mutations_and_publishes_their_snapshot_first() -> AppResult<()> {
         // Given

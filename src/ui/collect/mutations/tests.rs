@@ -3,7 +3,7 @@ use crate::{
     AppResult,
     git::{Limits, Mode, StageOutcome, StageTarget},
     state::State,
-    ui::fixtures::Fixture,
+    test_support::Fixture,
 };
 use std::{
     path::Path,
