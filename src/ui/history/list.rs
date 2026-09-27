@@ -31,7 +31,7 @@ impl History {
             .worker
             .as_ref()
             .ok_or_else(|| io::Error::other("History worker stopped"))?;
-        worker.sender.send(Request::Load {
+        worker.sender.send(Request {
             generation: self.list.generation,
             refresh,
             skip: if append { self.list.commits.len() } else { 0 },

@@ -30,15 +30,36 @@ impl CommitInfo {
     }
     pub fn matches(&self, query: &str) -> bool {
         let query = query.to_lowercase();
+        self.matches_lowercase(&query)
+    }
+
+    pub(crate) fn matches_lowercase(&self, query: &str) -> bool {
         [&self.id, &self.message, &self.author, &self.author_email]
             .into_iter()
-            .any(|value| value.to_lowercase().contains(&query))
+            .any(|value| value.to_lowercase().contains(query))
     }
 }
 
 pub struct HistoryPage {
     pub commits: Vec<CommitInfo>,
     pub more: bool,
+}
+
+pub(super) struct HistoricalTree {
+    commit: String,
+    entries: Vec<HistoricalEntry>,
+}
+
+struct HistoricalEntry {
+    path: PathBuf,
+    id: String,
+    kind: HistoricalKind,
+}
+
+enum HistoricalKind {
+    Blob,
+    Link,
+    Submodule,
 }
 
 impl Repository {
@@ -71,6 +92,31 @@ impl Repository {
         count: usize,
         query: &str,
     ) -> Result<HistoryPage, GitError> {
+        let mut commits = if query.is_empty() {
+            self.history_records(tip, Some((skip, count)))?
+        } else {
+            let query = query.to_lowercase();
+            self.history_all(tip)?
+                .into_iter()
+                .filter(|commit| commit.matches_lowercase(&query))
+                .collect()
+        };
+        let more = query.is_empty() && commits.len() > count;
+        if more {
+            commits.truncate(count);
+        }
+        Ok(HistoryPage { commits, more })
+    }
+
+    pub(crate) fn history_all(&self, tip: &str) -> Result<Vec<CommitInfo>, GitError> {
+        self.history_records(tip, None)
+    }
+
+    fn history_records(
+        &self,
+        tip: &str,
+        page: Option<(usize, usize)>,
+    ) -> Result<Vec<CommitInfo>, GitError> {
         let mut args: Vec<OsString> = vec![
             "log".into(),
             "--topo-order".into(),
@@ -79,7 +125,7 @@ impl Repository {
             "--format=format:%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%cr%x00%B%x00"
                 .into(),
         ];
-        if query.is_empty() {
+        if let Some((skip, count)) = page {
             args.push(format!("--skip={skip}").into());
             args.push(format!("--max-count={}", count.saturating_add(1)).into());
         }
@@ -91,9 +137,7 @@ impl Repository {
         let mut commits = Vec::new();
         let mut position: usize = 0;
         while let Some(record) = fields.get(position..position.saturating_add(10)) {
-            if let Some(commit) = parse_commit(record, &refs)
-                && (query.is_empty() || commit.matches(query))
-            {
+            if let Some(commit) = parse_commit(record, &refs) {
                 commits.push(commit);
             }
             position += 10;
@@ -102,11 +146,7 @@ impl Repository {
                 position += 1;
             }
         }
-        let more = query.is_empty() && commits.len() > count;
-        if more {
-            commits.truncate(count);
-        }
-        Ok(HistoryPage { commits, more })
+        Ok(commits)
     }
 
     fn history_refs(&self) -> Result<BTreeMap<String, Vec<String>>, GitError> {
@@ -222,33 +262,61 @@ impl SplitOnceByte for [u8] {
 
 impl super::Collector {
     pub(super) fn commit_files(
-        &self,
+        &mut self,
         commit: &str,
         selected: Option<&Path>,
         limits: Limits,
         loaded: &BTreeSet<PathBuf>,
     ) -> Result<Vec<Change>, GitError> {
-        let entries = self
-            .paths
-            .run(["ls-tree", "-r", "-z", "--full-tree", commit])?;
-        entries
-            .split(|b| *b == 0)
-            .filter(|entry| !entry.is_empty())
+        if self
+            .historical_tree
+            .as_ref()
+            .is_none_or(|tree| tree.commit != commit)
+        {
+            let output = self
+                .paths
+                .run(["ls-tree", "-r", "-z", "--full-tree", commit])?;
+            let entries = output
+                .split(|b| *b == 0)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| {
+                    let (header, path) = entry
+                        .split_once_byte(b'\t')
+                        .ok_or_else(|| GitError::InvalidOutput("Invalid tree entry".into()))?;
+                    let parts: Vec<_> = header.split(|b| *b == b' ').collect();
+                    let [mode, kind, id] = parts.as_slice() else {
+                        return Err(GitError::InvalidOutput("Invalid tree entry".into()));
+                    };
+                    Ok(HistoricalEntry {
+                        path: path_from_bytes(path),
+                        id: std::str::from_utf8(id)
+                            .map_err(|_| GitError::InvalidOutput("Invalid blob ID".into()))?
+                            .to_owned(),
+                        kind: if *kind == b"commit" {
+                            HistoricalKind::Submodule
+                        } else if *mode == b"120000" {
+                            HistoricalKind::Link
+                        } else {
+                            HistoricalKind::Blob
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, GitError>>()?;
+            self.historical_tree = Some(HistoricalTree {
+                commit: commit.to_owned(),
+                entries,
+            });
+        }
+        let Some(tree) = &self.historical_tree else {
+            return Err(GitError::InvalidOutput("Missing historical tree".into()));
+        };
+        tree.entries
+            .iter()
             .map(|entry| {
-                let (header, path) = entry
-                    .split_once_byte(b'\t')
-                    .ok_or_else(|| GitError::InvalidOutput("Invalid tree entry".into()))?;
-                let parts: Vec<_> = header.split(|b| *b == b' ').collect();
-                let [mode, kind, id] = parts.as_slice() else {
-                    return Err(GitError::InvalidOutput("Invalid tree entry".into()));
-                };
-                let path = path_from_bytes(path);
-                let explicit = loaded.contains(&path);
-                let selected = selected == Some(path.as_path()) || explicit;
-                let id = std::str::from_utf8(id)
-                    .map_err(|_| GitError::InvalidOutput("Invalid blob ID".into()))?;
+                let explicit = loaded.contains(&entry.path);
+                let selected = selected == Some(entry.path.as_path()) || explicit;
                 let mut change = Change {
-                    path,
+                    path: entry.path.clone(),
                     old_path: None,
                     category: Category::Comparison,
                     status: ' ',
@@ -258,18 +326,22 @@ impl super::Collector {
                     old_source: None,
                     new_source: None,
                 };
-                if *kind == b"commit" {
-                    change.summary = Some(format!("Submodule at {id}"));
-                } else if *mode == b"120000" {
-                    let target = self.object_text(id)?;
+                if matches!(entry.kind, HistoricalKind::Submodule) {
+                    change.summary = Some(format!("Submodule at {}", entry.id));
+                } else if matches!(entry.kind, HistoricalKind::Link) {
+                    let target = self.object_text(&entry.id)?;
                     change.summary = Some(format!(
                         "Symbolic link → {}",
                         target.as_deref().unwrap_or("(non-UTF-8 target)")
                     ));
                 } else {
-                    let bytes = self.object_size(id)?;
-                    if selected && (bytes <= limits.bytes || explicit) {
-                        let text = self.object_text(id)?;
+                    if !selected {
+                        change.summary = Some("Select a file to read its contents.".into());
+                        return Ok(change);
+                    }
+                    let bytes = self.object_size(&entry.id)?;
+                    if bytes <= limits.bytes || explicit {
+                        let text = self.object_text(&entry.id)?;
                         if let Some(text) = text.filter(|text| !text.contains('\0')) {
                             let count = text.split_terminator('\n').count();
                             if count <= limits.lines || explicit {
@@ -298,12 +370,10 @@ impl super::Collector {
                                 Some(format!("Binary or non-UTF-8 file ({bytes} bytes)"));
                         }
                     } else {
-                        change.oversized = selected && bytes > limits.bytes;
-                        change.summary = Some(if change.oversized {
-                            format!("Large file ({bytes} bytes). Select and press Enter to load.")
-                        } else {
-                            "Select a file to read its contents.".into()
-                        });
+                        change.oversized = true;
+                        change.summary = Some(format!(
+                            "Large file ({bytes} bytes). Select and press Enter to load."
+                        ));
                     }
                 }
                 Ok(change)
@@ -422,6 +492,54 @@ mod tests {
         assert_eq!(
             repo.historical_blob(&tip, Path::new("tracked.txt"))?,
             Some(b"original\n".to_vec())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selecting_another_file_reuses_the_pinned_tree_and_loads_its_contents() -> AppResult<()> {
+        // Given: two committed files and a reusable collector.
+        let fixture = Fixture::new("")?;
+        fixture.write("other.txt", "second file\n")?;
+        fixture.git(&["add", "other.txt"])?;
+        fixture.git(&["commit", "-m", "two files"])?;
+        let repo = fixture.repo()?;
+        let (Some(tip), _) = repo.history_head()? else {
+            return Err("Missing tip".into());
+        };
+        let mut collector = super::super::Collector::new(repo)?;
+        collector.snapshot(
+            &Mode::Files {
+                id: tip.clone(),
+                selected: Some("tracked.txt".into()),
+            },
+            Limits::default(),
+            &BTreeSet::new(),
+        )?;
+        // When: selecting a different path in the same immutable commit.
+        let snapshot = collector.snapshot(
+            &Mode::Files {
+                id: tip,
+                selected: Some("other.txt".into()),
+            },
+            Limits::default(),
+            &BTreeSet::new(),
+        )?;
+        // Then: the new selection has its own content; unselected blobs are not loaded.
+        assert_eq!(
+            snapshot
+                .changes
+                .iter()
+                .find(|change| change.path == Path::new("other.txt"))
+                .and_then(|change| change.new_source.as_deref()),
+            Some("second file\n")
+        );
+        assert!(
+            snapshot
+                .changes
+                .iter()
+                .find(|change| change.path == Path::new("tracked.txt"))
+                .is_some_and(|change| change.new_source.is_none())
         );
         Ok(())
     }

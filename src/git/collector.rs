@@ -18,6 +18,7 @@ pub struct Collector {
     repo: gix::Repository,
     config_files: BTreeMap<PathBuf, Option<u64>>,
     tracking: Option<Tracking>,
+    pub(super) historical_tree: Option<super::history::HistoricalTree>,
 }
 
 #[derive(Default, Debug)]
@@ -154,6 +155,7 @@ impl Collector {
             repo,
             config_files: BTreeMap::new(),
             tracking: None,
+            historical_tree: None,
         };
         collector.normalize_resource_paths()?;
         collector.remember_configuration();

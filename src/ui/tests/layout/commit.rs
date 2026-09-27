@@ -89,7 +89,13 @@ fn narrow_commit_footer_clips_bindings_to_one_row() -> AppResult<()> {
     // Then
     let row = row_with(&buffer, "ctrl-s commit · tab switch").ok_or("Missing clipped footer")?;
     assert_eq!(row_with(&buffer, "ctrl-s"), Some(row));
-    assert_eq!(line(&buffer, row + 1).chars().filter(|&ch| ch == '└').count(), 1);
+    assert_eq!(
+        line(&buffer, row + 1)
+            .chars()
+            .filter(|&ch| ch == '└')
+            .count(),
+        1
+    );
     assert!(!line(&buffer, row + 1).contains("esc close"));
     Ok(())
 }
