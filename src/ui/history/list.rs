@@ -335,7 +335,8 @@ impl History {
                         format!("{mark} {} ", commit.short_id()),
                         palette.base().fg(palette.accent),
                     ),
-                    Span::raw(format!("{}{}{}", safe(commit.subject()), head, refs)),
+                    Span::raw(format!("{}{}", safe(commit.subject()), head)),
+                    Span::styled(refs, palette.base().fg(palette.accent)),
                     Span::styled(
                         format!(
                             "  · {} · {}",
