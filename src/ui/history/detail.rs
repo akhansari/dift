@@ -67,6 +67,14 @@ impl Detail {
 }
 
 impl History {
+    pub(crate) fn sync_detail_help(&mut self, area: Rect) {
+        if let (true, Screen::Detail(screen)) = (self.visible, &mut self.screen) {
+            let detail = &mut screen.viewer;
+            ViewerInput::new(&mut detail.state, &mut detail.interaction)
+                .sync_help(area, &self.config);
+        }
+    }
+
     pub fn apply_pending_filter(&mut self, now: Instant) -> AppResult<Effects> {
         if !self.visible {
             return Ok(Effects::default());

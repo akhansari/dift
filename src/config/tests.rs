@@ -692,6 +692,43 @@ fn existing_shortcuts_take_precedence_over_new_history_defaults() -> Result<(), 
 }
 
 #[test]
+fn existing_tree_and_diff_shortcuts_override_the_new_global_history_default()
+-> Result<(), ConfigError> {
+    // Given: a valid older configuration using the proposed global history key in scoped views.
+    let config = Config::parse(
+        "keybindings { tree { toggle-sidebar \"t\"; }; diff { toggle-layout \"t\"; }; }",
+    )?;
+    // When: the new history binding is installed.
+    // Then: those explicit shortcuts remain available and the conflicting default is dropped.
+    assert_eq!(config.bindings.labels(Scope::Global, Action::History), "");
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Tree, KeyEvent::from(KeyCode::Char('t'))),
+        Some(Action::Sidebar)
+    );
+    assert_eq!(
+        config
+            .bindings
+            .action(Scope::Diff, KeyEvent::from(KeyCode::Char('t'))),
+        Some(Action::Layout)
+    );
+    Ok(())
+}
+
+#[test]
+fn remapped_history_key_conflicts_are_reported() {
+    // Given: both a legacy Tree action and the new history action explicitly use one key.
+    let text = "keybindings { tree { toggle-sidebar \"z\"; }; global { history \"z\"; }; }";
+    // When: validating the configuration.
+    // Then: explicit choices are not silently pruned.
+    assert!(matches!(
+        Config::parse(text),
+        Err(ConfigError::Binding(BindingError::Conflict { .. }))
+    ));
+}
+
+#[test]
 fn default_config_exposes_all_history_shortcuts() -> Result<(), ConfigError> {
     // Given: the generated default configuration.
     let template = Config::template();

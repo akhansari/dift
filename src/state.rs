@@ -329,8 +329,7 @@ impl State {
             self.views.collapsed(),
             !self.views.presentation.is_files(),
         );
-        self.tree
-            .filter_changes(&self.snapshot, &self.change_filter);
+        self.filter_tree_changes();
         self.tree.refilter(&self.filter, self.views.collapsed());
         self.refresh_find_matches();
         self.reconcile_selection();

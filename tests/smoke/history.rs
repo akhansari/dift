@@ -82,6 +82,25 @@ fn commit_details_show_only_history_shortcuts_in_the_footer() -> Result {
 }
 
 #[test]
+fn commit_help_scrolls_with_the_keyboard() -> Result {
+    // Given: the help overlay in a historical commit viewer.
+    let fixture = Fixture::new()?;
+    let mut session = fixture.start()?;
+    session.send("t")?;
+    session.wait("initial (HEAD)")?;
+    session.send("\r?")?;
+    session.wait("GENERAL")?;
+    let first_page = session.screen.text();
+    // When: paging down without any mouse interaction.
+    session.send("\x1b[6~")?;
+    // Then: the help content advances.
+    session.wait_for("historical help scroll", Duration::from_secs(4), |screen| {
+        screen.text() != first_page
+    })?;
+    session.quit()
+}
+
+#[test]
 fn long_commit_details_scroll_inside_the_available_area() -> Result {
     // Given: a commit message longer than the available popup height.
     let fixture = Fixture::new()?;

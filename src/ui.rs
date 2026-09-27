@@ -128,6 +128,12 @@ impl<'a> ViewerInput<'a> {
         self.state.apply_pending_filter(now)
     }
 
+    fn sync_help(&mut self, area: Rect, config: &Config) {
+        if self.state.help() {
+            help::Help::new(area, &config.bindings, &Palette::new(config.light)).sync(self.state);
+        }
+    }
+
     fn clear_selection(&mut self) -> bool {
         self.interaction.selection.clear()
     }
@@ -184,10 +190,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         commands.resize(size)?;
         let full_area = Rect::new(0, 0, size.width, size.height);
         let view = ViewAreas::new(full_area, state.sidebar());
-        if state.help() {
-            help::Help::new(view.area, &config.bindings, &Palette::new(config.light))
-                .sync(&mut state);
-        }
+        ViewerInput::new(&mut state, &mut interaction).sync_help(view.area, &config);
         let new_viewport = view.viewport();
         if viewport != new_viewport {
             viewport = new_viewport;
@@ -196,6 +199,7 @@ pub fn run(repo: Repository, mode: Mode, config: Config) -> AppResult<()> {
         let historical_view = history
             .detail_state()
             .map(|detail| ViewAreas::new(full_area, detail.sidebar()));
+        history.sync_detail_help(full_area);
         let history_effects = history.apply_pending_filter(Instant::now())?;
         needs_draw |= history_effects.redraw;
         if let Some(detail) = history.detail_mut() {

@@ -230,6 +230,28 @@ fn comparison_modal_starts_with_statuses() {
 }
 
 #[test]
+fn files_show_the_complete_tree_despite_a_changes_status_filter() {
+    // Given: an Added-only Changes filter on a historical comparison.
+    let mut state = State::new(false);
+    state.set_comparison(true);
+    let mut snapshot = snapshot_with(&[
+        ("a.rs", Category::Comparison),
+        ("b.rs", Category::Comparison),
+    ]);
+    snapshot.changes[1].status = 'A';
+    state.update_snapshot(snapshot);
+    state.change_filter.statuses[1] = true;
+    state.refilter();
+    assert_eq!(paths(&state), [Path::new(""), Path::new("b.rs")]);
+    // When: switching to complete files and back to changes.
+    state.set_presentation(crate::model::Presentation::Files);
+    assert_eq!(paths(&state), [Path::new("a.rs"), Path::new("b.rs")]);
+    state.set_presentation(crate::model::Presentation::Changes);
+    // Then: the Changes filter is preserved without hiding historical files.
+    assert_eq!(paths(&state), [Path::new(""), Path::new("b.rs")]);
+}
+
+#[test]
 fn incompatible_filters_keep_only_the_root() {
     // Given
     let mut state = staged();

@@ -116,6 +116,7 @@ impl Config {
         let doc: KdlDocument = text.parse()?;
         let mut config = Self::default();
         let mut seen = BTreeSet::new();
+        let mut explicit_bindings = BTreeSet::new();
         let mut explicit_theme = false;
         for node in doc.nodes() {
             let name = node.name().value();
@@ -169,6 +170,7 @@ impl Config {
                                         setting: format!("action {}", binding.name().value()),
                                     }
                                 })?;
+                            explicit_bindings.insert((scope, action));
                             if binding.children().is_some() {
                                 return Err(ValidationError::ChildBlockNotAllowed {
                                     setting: "Bindings".into(),
@@ -345,7 +347,7 @@ impl Config {
         if config.light && !explicit_theme {
             config.theme = "InspiredGitHub".into();
         }
-        config.bindings.prune_default_conflicts();
+        config.bindings.prune_default_conflicts(&explicit_bindings);
         config.bindings.validate()?;
         Ok(config)
     }

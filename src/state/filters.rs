@@ -79,8 +79,18 @@ pub(crate) struct FilterMenu {
 }
 
 impl State {
+    pub(super) fn filter_tree_changes(&mut self) {
+        let filter = if self.views.presentation.is_files() {
+            &ChangeFilter::default()
+        } else {
+            &self.change_filter
+        };
+        self.tree.filter_changes(&self.snapshot, filter);
+    }
+
     pub(super) fn refilter(&mut self) {
-        let active = !self.filter.is_empty() || self.change_filter.restricted();
+        let active = !self.filter.is_empty()
+            || (!self.views.presentation.is_files() && self.change_filter.restricted());
         if !active {
             if let Some(collapsed) = self.views.unfiltered_mut().take() {
                 *self.views.collapsed_mut() = collapsed;
@@ -88,8 +98,7 @@ impl State {
         } else if self.views.unfiltered().is_none() {
             *self.views.unfiltered_mut() = Some(self.views.collapsed().clone());
         }
-        self.tree
-            .filter_changes(&self.snapshot, &self.change_filter);
+        self.filter_tree_changes();
         self.tree.refilter(&self.filter, self.views.collapsed());
         if active {
             let mut revealed = false;
@@ -144,8 +153,7 @@ impl State {
                     self.selection = menu.selection;
                     *self.views.collapsed_mut() = menu.collapsed;
                     *self.views.unfiltered_mut() = menu.unfiltered_collapsed;
-                    self.tree
-                        .filter_changes(&self.snapshot, &self.change_filter);
+                    self.filter_tree_changes();
                     self.tree.refilter(&self.filter, self.views.collapsed());
                     self.reconcile_selection();
                 }

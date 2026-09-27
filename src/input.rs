@@ -1,5 +1,8 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 use thiserror::Error;
 
 mod labels;
@@ -465,9 +468,9 @@ impl Bindings {
 
     /// Existing user shortcuts win over newly introduced history defaults.
     /// A deliberately remapped history action still goes through normal validation.
-    pub(crate) fn prune_default_conflicts(&mut self) {
-        let defaults = Self::defaults();
+    pub(crate) fn prune_default_conflicts(&mut self, explicit: &BTreeSet<(Scope, Action)>) {
         let configured = self.0.clone();
+        let defaults = Self::defaults();
         for (scope, action) in [
             (Scope::Global, Action::History),
             (Scope::History, Action::MarkBase),
@@ -476,27 +479,37 @@ impl Bindings {
             (Scope::History, Action::Swap),
             (Scope::History, Action::CommitInfo),
         ] {
-            let original = defaults
-                .0
-                .get(&scope)
-                .and_then(|actions| actions.get(&action));
+            if explicit.contains(&(scope, action))
+                && configured
+                    .get(&scope)
+                    .and_then(|actions| actions.get(&action))
+                    != defaults
+                        .0
+                        .get(&scope)
+                        .and_then(|actions| actions.get(&action))
+            {
+                continue;
+            }
             let current = self
                 .0
                 .get_mut(&scope)
                 .and_then(|actions| actions.get_mut(&action));
-            if let (Some(original), Some(current)) = (original, current)
-                && current == original
-            {
+            if let Some(current) = current {
                 current.retain(|key| {
-                    [
-                        Some(scope),
-                        (scope != Scope::Global).then_some(Scope::Global),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|scope| configured.get(&scope))
-                    .flat_map(|actions| actions.iter())
-                    .all(|(other, keys)| *other == action || !keys.contains(key))
+                    !explicit.iter().any(|&(other_scope, other)| {
+                        other != action
+                            && (other_scope == scope
+                                || scope == Scope::Global
+                                    && matches!(
+                                        other_scope,
+                                        Scope::Tree | Scope::Diff | Scope::History
+                                    )
+                                || other_scope == Scope::Global && scope != Scope::Global)
+                            && configured
+                                .get(&other_scope)
+                                .and_then(|actions| actions.get(&other))
+                                .is_some_and(|keys| keys.contains(key))
+                    })
                 });
             }
         }
