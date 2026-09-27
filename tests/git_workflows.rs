@@ -175,6 +175,43 @@ fn repository_without_commits_supports_index_and_untracked_files() -> AppResult<
 }
 
 #[test]
+fn repository_without_index_reports_untracked_files() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::new()?;
+    fixture.write("new.txt", "untracked\n")?;
+    let repo = fixture.repo()?;
+    // When
+    let snapshot = repo.snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())?;
+    // Then
+    assert_eq!(snapshot.changes.len(), 1);
+    assert_eq!(snapshot.changes[0].category, Category::Untracked);
+    assert_eq!(snapshot.changes[0].path, Path::new("new.txt"));
+    Ok(())
+}
+
+#[test]
+fn corrupt_index_is_reported_instead_of_treated_as_missing() -> AppResult<()> {
+    // Given
+    let fixture = Fixture::committed()?;
+    fixture.write(".git/index", "invalid index")?;
+    let repo = fixture.repo()?;
+    // When
+    let error = repo
+        .snapshot(&Mode::Watch, Limits::default(), &BTreeSet::new())
+        .err()
+        .ok_or("Expected a corrupt index error")?;
+    // Then
+    assert!(matches!(
+        error,
+        GitError::Access {
+            operation: "Read index",
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
 fn staged_rename_retains_both_paths_and_metadata() -> AppResult<()> {
     // Given
     let fixture = Fixture::committed()?;

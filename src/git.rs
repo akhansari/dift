@@ -191,7 +191,8 @@ impl Repository {
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, GitError> {
-    gix::path::realpath(path).map_err(|error| GitError::access("Resolve repository path", error))
+    gix::path::realpath(path)
+        .map_err(|error| GitError::access("Resolve repository path", error.into_error()))
 }
 #[cfg(unix)]
 fn path_from_bytes(bytes: &[u8]) -> PathBuf {

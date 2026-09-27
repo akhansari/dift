@@ -92,7 +92,7 @@ impl Fingerprint {
             }
             Some(
                 hash.try_finalize()
-                    .map_err(|error| GitError::access("Fingerprint file", error))?,
+                    .map_err(|error| GitError::access("Fingerprint file", error.into_error()))?,
             )
         } else {
             None

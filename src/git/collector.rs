@@ -195,7 +195,7 @@ impl Collector {
                 let mut config = self.repo.config_snapshot_mut();
                 config
                     .set_raw_value(key, path)
-                    .map_err(|e| GitError::access("Normalize Git resource path", e))?;
+                    .map_err(|e| GitError::access("Normalize Git resource path", e.into_error()))?;
                 config
                     .commit()
                     .map_err(|e| GitError::access("Apply in-memory Git configuration", e))?;
@@ -270,12 +270,18 @@ impl Collector {
         let index = match self.repo.open_index() {
             Ok(index) if index.is_sparse() => return self.cli_status(),
             Ok(index) => index,
-            Err(gix::worktree::open_index::Error::IndexFile(
-                gix::index::file::init::Error::Io(e),
-            )) if e.kind() == std::io::ErrorKind::NotFound => gix::index::File::from_state(
-                gix::index::State::new(self.repo.object_hash()),
-                self.repo.index_path(),
-            ),
+            Err(e)
+                if e.downcast_any_ref::<gix::index::file::init::OpenError>()
+                    .is_some_and(|open| {
+                        open.path == self.repo.index_path()
+                            && open.source.kind() == std::io::ErrorKind::NotFound
+                    }) =>
+            {
+                gix::index::File::from_state(
+                    gix::index::State::new(self.repo.object_hash()),
+                    self.repo.index_path(),
+                )
+            }
             Err(e) if unsupported_index(&e) => return self.cli_status(),
             Err(e) => return Err(GitError::access("Read index", e)),
         };
@@ -411,17 +417,20 @@ impl Collector {
 }
 
 fn oid(value: &str) -> Result<gix::ObjectId, GitError> {
-    gix::ObjectId::from_hex(value.as_bytes()).map_err(|e| GitError::access("Parse object ID", e))
+    gix::ObjectId::from_hex(value.as_bytes())
+        .map_err(|e| GitError::access("Parse object ID", e.into_error()))
 }
 
-fn unsupported_index(error: &gix::worktree::open_index::Error) -> bool {
-    use gix::index::{decode, extension, file};
-    matches!(
-        error,
-        gix::worktree::open_index::Error::IndexFile(file::init::Error::Decode(
-            decode::Error::Extension(extension::decode::Error::MandatoryUnimplemented { .. })
-        ))
-    )
+fn unsupported_index(error: &gix::Error) -> bool {
+    // gix 0.88 reports unknown mandatory extensions as messages rather than typed errors.
+    error
+        .downcast_any_ref::<gix::error::Message>()
+        .is_some_and(|message| {
+            message
+                .message
+                .starts_with("Encountered mandatory extension '")
+                && message.message.ends_with("' which isn't implemented yet")
+        })
 }
 
 fn fingerprint(path: &Path) -> Option<u64> {
