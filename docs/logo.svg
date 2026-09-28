@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="dift">Dift logo</title>
+  <desc id="description">An orange-clawed crab with a hollow shell containing a green plus and a red minus.</desc>
+  <defs>
+    <filter id="background-outline" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+      <feMorphology in="SourceAlpha" operator="dilate" radius="5" result="expanded"/>
+      <feComposite in="expanded" in2="SourceAlpha" operator="out" result="outline"/>
+      <feFlood flood-color="#86a5b8" result="outline-color"/>
+      <feComposite in="outline-color" in2="outline" operator="in" result="colored-outline"/>
+      <feMerge>
+        <feMergeNode in="colored-outline"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <radialGradient gradientUnits="userSpaceOnUse" cx="256" cy="256" r="40" id="gradient-0">
+      <stop offset="0" style="stop-color: rgb(7, 85, 46)"/>
+      <stop offset="1" style="stop-color: rgb(0% 21.757% 7.6541%)"/>
+    </radialGradient>
+    <radialGradient gradientUnits="userSpaceOnUse" cx="256" cy="352" r="40" id="gradient-1">
+      <stop offset="0" style="stop-color: rgb(153, 28, 41)"/>
+      <stop offset="1" style="stop-color: rgb(43.46% 0% 6.055%)"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="#86a5b8" style="pointer-events: none;">
+    <title>background</title>
+  </rect>
+  <g filter="url(#background-outline)" style="">
+    <title>crab</title>
+    <g fill="#073b4c" stroke="#073b4c" stroke-linecap="round" stroke-width="12" style="" transform="matrix(1, 0, 0, 1, 0, -14)">
+      <title>eyes</title>
+      <path d="M222 181L216 156"/>
+      <path d="M290 181L296 156"/>
+      <circle cx="214" cy="149" r="9" stroke="none"/>
+      <circle cx="298" cy="149" r="9" stroke="none"/>
+    </g>
+    <g>
+      <title>claws</title>
+      <path d="M393 183C429 181 456 158 461 126C468 87 441 51 401 41C379 35 356 38 335 50C326 55 328 68 338 71C363 77 382 91 393 111C375 108 359 100 346 87C339 80 327 85 328 96C331 135 357 166 393 183Z" fill="#F1502F" stroke="#073b4c" stroke-linecap="round" stroke-linejoin="round" stroke-width="18" style="">
+        <title>claw right</title>
+      </path>
+      <path d="M119 183C83 181 56 158 51 126C44 87 71 51 111 41C133 35 156 38 177 50C186 55 184 68 174 71C149 77 130 91 119 111C137 108 153 100 166 87C173 80 185 85 184 96C181 135 155 166 119 183Z" fill="#F1502F" stroke="#073b4c" stroke-linecap="round" stroke-linejoin="round" stroke-width="18" style="">
+        <title>claw left</title>
+      </path>
+    </g>
+    <g fill="none" stroke="#073b4c" stroke-linecap="round" stroke-linejoin="round" stroke-width="18" style="">
+      <title>legs</title>
+      <path d="M158 255C118 248 86 220 83 181"/>
+      <path d="M354 255C394 248 426 220 429 181"/>
+      <path d="M153 291L111 278 72 304 42 337 31 371"/>
+      <path d="M359 291L401 278 440 304 470 337 481 371"/>
+      <path d="M151 337L105 327 77 359C63 376 59 398 64 418"/>
+      <path d="M361 337L407 327 435 359C449 376 453 398 448 418"/>
+      <path d="M153 382L116 374 103 407C97 424 101 444 116 459"/>
+      <path d="M359 382L396 374 409 407C415 424 411 444 396 459"/>
+    </g>
+    <path d="M356 188.5C356 171.1 311.2 157 256 157S156 171.1 156 188.5V409C156 426.4 200.8 440.5 256 440.5S356 426.4 356 409Z" stroke-linejoin="round" stroke-width="18" style="fill: rgb(91, 152, 189);" stroke="#073b4c">
+      <title>body</title>
+    </path>
+  </g>
+  <g fill="none" stroke-width="28" stroke-linecap="round">
+    <title>diff plus minus</title>
+    <path d="M216 256H296M256 216V296" style="stroke: url(&quot;#gradient-0&quot;);"/>
+    <path d="M216 352H296" style="stroke: url(&quot;#gradient-1&quot;);"/>
+  </g>
+</svg>
